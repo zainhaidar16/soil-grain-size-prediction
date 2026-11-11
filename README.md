@@ -6,11 +6,17 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 ## Status
 
-**Stage 1: Baseline scaffold.** The code currently implements an image-independent mean-curve baseline, rigorous per-sample EMD evaluation, physical output checks, and a submission writer. It does **not** yet use soil photographs or represent a competitive trained model.
+**Stage 1: Hybrid notebook + Python baseline scaffold.** The code currently implements an image-independent mean-curve baseline, rigorous per-sample EMD evaluation, physical output checks, and a submission writer. It does **not** yet use soil photographs or represent a competitive trained model.
 
 ## Repository layout
 
 ```text
+notebooks/
+  01_dataset_exploration.ipynb  # CSV/image audits and visualizations
+  02_baseline_and_validation.ipynb # Sample-level EMD baseline
+  README.md
+configs/
+  experiment.json     # Experiment defaults and validation policy
 src/
   __init__.py
   metric.py            # Log-diameter weighted EMD + valid curves
@@ -33,6 +39,7 @@ python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m pytest -q
+jupyter lab  # install jupyterlab separately if needed, or open .ipynb in VS Code
 ```
 
 Get the competition dataset through Kaggle according to its rules. Place CSV files in your local `data/` folder; do **not** commit the dataset or credentials.
@@ -45,6 +52,17 @@ python -m src.baseline --labels data/Training_labels_updated.csv --submission-te
 ```
 
 The baseline expects a `sample_id` column and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2.0, 6.3, 20, 63, 200`. If the real training CSV uses different identifiers or formatting, **inspect and adapt the loader** before running; the schema has not yet been validated against downloaded data.
+
+## Notebook workflow
+
+Open the notebooks in order:
+
+1. `notebooks/01_dataset_exploration.ipynb` — inspect all local CSVs, preview photographs, check labels and metadata; deliberately does not assume mapping between images and soil samples.
+2. `notebooks/02_baseline_and_validation.ipynb` — validate the weighted-EMD calculation, evaluate a leave-one-soil-sample-out mean curve, and generate a baseline submission only when the official CSV files are available.
+
+Both notebooks import reusable functions from `src/`; notebook cells are unexecuted and no competition scores are claimed. **Run notebooks with the repository as working directory or from `notebooks/`** so their project-root discovery works.
+
+You can install `jupyterlab` separately (`pip install jupyterlab`) if you do not use VS Code or Kaggle's notebook environment.
 
 ## Validation and scoring
 
