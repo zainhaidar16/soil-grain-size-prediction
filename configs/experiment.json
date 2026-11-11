@@ -1,0 +1,22 @@
+{
+  "project": "soil-grain-size-prediction",
+  "competition": "soil-grain-size-from-photos",
+  "seed": 42,
+  "validation": {
+    "method": "leave_one_sample_out",
+    "group_key": "sample_id",
+    "metric": "log_weighted_emd",
+    "lower_is_better": true
+  },
+  "paths": {
+    "data_dir": "data",
+    "labels": "data/Training_labels_updated.csv",
+    "submission_template": "data/sample_submission.csv",
+    "output_dir": "submissions"
+  },
+  "model": {
+    "stage": "image_independent_mean_baseline",
+    "vision_backbone": null
+  },
+  "notes": "Provisional CSV path and schema: confirm against actual Kaggle download before running."
+}
