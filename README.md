@@ -6,25 +6,40 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 ## Status
 
-**Stage 1: Hybrid notebook + Python baseline scaffold.** The code currently implements an image-independent mean-curve baseline, rigorous per-sample EMD evaluation, physical output checks, and a submission writer. It does **not** yet use soil photographs or represent a competitive trained model.
+**Milestone 3: Frozen DINOv2 + Ridge image-based model.** The repository includes verified image-to-sample mapping for all 162 photographs (127 train across 24 samples, 35 test across 10 samples), camera-scale (`effective_ppm`) physical-crop preprocessing, frozen DINOv2 (`vit_small_patch14_dinov2.lvd142m`) feature extraction, sample-level aggregation, and leakage-free nested leave-one-sample-out cross-validation (LOOCV) Ridge regression.
+
+### Validation results (24 training samples, LOOCV EMD, lower is better)
+
+| Model | LOOCV EMD | Delta vs. Baseline | Notes |
+| --- | ---: | ---: | --- |
+| Mean-curve baseline (`src/baseline.py`) | `89.888867` | — | Image-independent sample-level LOOCV |
+| Frozen DINOv2-S + Ridge (`src/model.py`) | **`45.160960`** | **`-44.727907` (-49.76%)** | Strictly leakage-free nested LOOCV (`alpha=1000.0`), multi-scale `90mm` + `150mm` physical crops, `cls_patch_mean` pooling; improves 22/24 samples |
+
+No Kaggle leaderboard score is claimed; all scores above are local sample-level LOOCV results.
 
 ## Repository layout
 
 ```text
 notebooks/
-  01_dataset_exploration.ipynb  # CSV/image audits and visualizations
-  02_baseline_and_validation.ipynb # Sample-level EMD baseline
+  01_dataset_exploration.ipynb     # CSV/image audits and visualizations
+  02_baseline_and_validation.ipynb # Sample-level EMD mean-curve baseline
+  03_dinov2_ridge_model.ipynb      # Milestone 3: DINOv2 + LOOCV Ridge experiment
   README.md
 configs/
-  experiment.json     # Experiment defaults and validation policy
+  experiment.json                  # Experiment defaults and validation policy
 src/
   __init__.py
-  metric.py            # Log-diameter weighted EMD + valid curves
-  baseline.py          # Leave-one-soil-sample-out baseline and submission
+  metric.py                        # Log-diameter weighted EMD ([0, 500]) + curve validation
+  baseline.py                      # Leave-one-soil-sample-out mean baseline and submission
+  dataset.py                       # Image-to-sample mapping and effective PPM metadata
+  features.py                      # EXIF/PPM physical-scale crops, frozen DINOv2, aggregation
+  model.py                         # Leakage-free LOOCV Ridge regression and submission writer
 tests/
-  test_metric.py       # Scoring and structural tests
+  test_metric.py                   # EMD normalization, Wasserstein-1 equivalence, schema tests
+  test_dataset.py                  # Filename/sample mapping, PPM, cropping, aggregation tests
+  test_model.py                    # LOOCV leakage, constraint projection, submission tests
 requirements.txt
-.gitignore             # Keeps raw data and trained models out of Git
+.gitignore                         # Keeps raw data, submissions, and model caches out of Git
 ```
 
 ## Quick start
@@ -39,47 +54,41 @@ python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m pytest -q
-jupyter lab  # install jupyterlab separately if needed, or open .ipynb in VS Code
 ```
 
-Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both notebooks use `kagglehub.competition_download("soil-grain-size-from-photos")` automatically if the project `data/` folder has no CSVs. The downloaded files are cached by KaggleHub and are **not** committed to Git. You can also put dataset files in `data/`, or set `SOIL_DATA_DIR` to an existing extracted dataset directory. Outside Kaggle, KaggleHub may require Kaggle authentication. Never commit tokens or credentials.
+Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both the CLI and notebooks resolve data via `SOIL_DATA_DIR`, local `data/`, the local `kagglehub` cache, or `kagglehub.competition_download("soil-grain-size-from-photos")`. Outside Kaggle, KaggleHub requires Kaggle authentication (e.g., `KAGGLE_API_TOKEN`). Never commit tokens or credentials.
 
-Once you have verified the actual CSV filenames and schema:
+Run the mean baseline or the Milestone 3 DINOv2 + Ridge pipeline:
 
 ```bash
-python -m src.baseline --labels data/Training_labels_updated.csv
+# Mean-curve baseline
 python -m src.baseline --labels data/Training_labels_updated.csv --submission-template data/sample_submission.csv --output submissions/mean_baseline.csv
+
+# Milestone 3: Frozen DINOv2 + nested LOOCV Ridge (writes submissions/submission.csv if better than baseline)
+python -m src.model --output submissions/submission.csv
 ```
 
-The baseline expects a `sample_id` column and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (matching the official Kaggle CSV headers).
+The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (verified against `Training_labels_updated.csv` and `sample_submission.csv`).
 
 ## Notebook workflow
 
-Open the notebooks in order:
+1. `notebooks/01_dataset_exploration.ipynb` — inspect all local CSVs, preview photographs, and inspect target grading curves.
+2. `notebooks/02_baseline_and_validation.ipynb` — validate the weighted-EMD calculation and evaluate the leave-one-soil-sample-out mean curve (`89.888867`).
+3. `notebooks/03_dinov2_ridge_model.ipynb` — audit the 162 image-to-sample mappings and camera PPMs, extract frozen DINOv2 multi-scale physical-crop embeddings, evaluate leakage-free nested LOOCV Ridge (`45.160960`), plot per-sample diagnostics, and generate `submissions/submission.csv`.
 
-1. `notebooks/01_dataset_exploration.ipynb` — inspect all local CSVs, preview photographs, check labels and metadata; deliberately does not assume mapping between images and soil samples.
-2. `notebooks/02_baseline_and_validation.ipynb` — validate the weighted-EMD calculation, evaluate a leave-one-soil-sample-out mean curve, and generate a baseline submission only when the official CSV files are available.
+**Run notebooks with the repository as working directory or from `notebooks/`** so their project-root discovery works.
 
-Both notebooks import reusable functions from `src/` and automatically resolve competition data through KaggleHub; notebook cells are unexecuted and no competition scores are claimed. **Run notebooks with the repository as working directory or from `notebooks/`** so their project-root discovery works.
+## Validation, metric, and limitations
 
-You can install `jupyterlab` separately (`pip install jupyterlab`) if you do not use VS Code or Kaggle's notebook environment.
-
-## Validation and scoring
-
-- **Never split photographs randomly.** Each soil sample can have several photos; splitting photos permits sample leakage. Hold out entire soil samples.
-- The starter baseline uses leave-one-sample-out validation, predicting each held-out sample from the mean training curve of the other samples.
-- The scoring implementation computes the sum of absolute cumulative percentage differences weighted by `log10(diameter[i+1] / diameter[i])` across the ten adjacent intervals. Verify implementation against the official metric if source code becomes available.
-- A valid submission contains exactly 11 nondecreasing percentages in `[0, 100]` for each test ID; the last value must be 100.
-- The visible public leaderboard is **not** the final score; prioritize robust cross-validation.
-
-## Planned roadmap
-
-1. Audit real dataset: sample count, image-to-sample IDs, resolutions, scales (PPM), photographic views and missing values.
-2. Implement group-safe preprocessing and pretrained frozen image embeddings; aggregate multiple photos per sample.
-3. Evaluate regularized regressors (Ridge, PLS, nearest neighbors) using the same holdout protocol.
-4. Add calibrated physical texture/particle-scale features and optional robust model ensembles.
-5. Validate constraints, reproducibility, and test submission before uploading to Kaggle.
+- **Never split photographs randomly.** Each soil sample has 3–8 photographs; all evaluations hold out entire soil samples (leave-one-sample-out CV) and fit scalers/hyperparameters strictly inside each training fold.
+- **Verified competition metric normalization:** `src/metric.py` computes the unnormalized log10-diameter weighted sum of absolute cumulative percentage differences across the 10 adjacent intervals, taking values in `[0, 500]` (`LOG_WEIGHTS.sum() == 5.0`), which is mathematically identical to `100 * scipy.stats.wasserstein_distance` on `log10(DIAMETERS)`.
+- **Physical-scale (PPM) normalization:** Most training photographs (`Motorola Edge` at `1600x720`, `Samsung A52` at `1599x1200`) are downscaled relative to `ppm_updated.csv` (`effective_ppm ~ 4.55–4.60 px/mm`), whereas test photographs (`iPhone 14`, `iPhone 16`) are at native resolution (`13.94–19.53 px/mm`). Cropping fixed physical squares (`90 mm` and `150 mm`) normalizes apparent grain scale across cameras.
+- **Known limitations:**
+  - Very small labeled dataset (`n = 24` soil samples), so high variance is expected on unseen geological sites.
+  - Camera domain shift remains between training phones (Android) and test phones (iPhones) in lighting, sharpness, and color rendition despite physical-scale cropping.
+  - Only frozen DINOv2-S embeddings + linear Ridge regression are used so far; fine-grained particle-size texture features, multi-backbone ensembles, and EMD-optimal monotonic projection are left for future milestones.
 
 ## Research and integrity
 
-Never check in raw contest images, test labels, Kaggle tokens, downloaded model binaries, or unlicensed data. Follow [competition rules](https://www.kaggle.com/competitions/soil-grain-size-from-photos/rules) for external data, pretrained weights, and sharing. No leaderboard results have been achieved or claimed by this repository yet.
+Never check in raw contest images, test labels, Kaggle tokens, downloaded model binaries, or unlicensed data. Follow [competition rules](https://www.kaggle.com/competitions/soil-grain-size-from-photos/rules) for external data, pretrained weights, and sharing.
+

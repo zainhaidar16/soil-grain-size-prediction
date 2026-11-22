@@ -29,3 +29,22 @@ def test_projection_is_valid():
 def test_invalid_sequence_rejected():
     with pytest.raises(ValueError, match="nondecreasing"):
         validate_curves([0, 2, 1, 5, 10, 20, 40, 60, 80, 90, 100])
+
+
+def test_emd_range_and_wasserstein_equivalence():
+    from scipy.stats import wasserstein_distance
+
+    # Maximum possible EMD is 100 * log10(200 / 0.002) = 500.0
+    finest = np.array([100.0] * 11)
+    coarsest = np.array([0.0] * 10 + [100.0])
+    assert emd_per_sample(finest, coarsest)[0] == pytest.approx(500.0)
+
+    # Exact equivalence to 100 * Wasserstein-1 distance on log10(DIAMETERS)
+    y_true = np.array([5.2, 10.2, 23.7, 50.3, 75.8, 85.7, 91.0, 94.9, 98.6, 100.0, 100.0])
+    y_pred = np.array([3.1, 6.2, 14.5, 30.2, 45.7, 55.9, 64.7, 79.4, 93.4, 99.5, 100.0])
+    pdf_true = np.diff(np.concatenate([[0.0], y_true])) / 100.0
+    pdf_pred = np.diff(np.concatenate([[0.0], y_pred])) / 100.0
+    expected = 100.0 * wasserstein_distance(
+        np.log10(DIAMETERS), np.log10(DIAMETERS), u_weights=pdf_true, v_weights=pdf_pred
+    )
+    assert emd_per_sample(y_true, y_pred)[0] == pytest.approx(expected, rel=1e-6)
