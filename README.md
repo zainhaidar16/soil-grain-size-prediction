@@ -51,7 +51,7 @@ python -m src.baseline --labels data/Training_labels_updated.csv
 python -m src.baseline --labels data/Training_labels_updated.csv --submission-template data/sample_submission.csv --output submissions/mean_baseline.csv
 ```
 
-The baseline expects a `sample_id` column and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2.0, 6.3, 20, 63, 200`. If the real training CSV uses different identifiers or formatting, **inspect and adapt the loader** before running; the schema has not yet been validated against downloaded data.
+The baseline expects a `sample_id` column and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (matching the official Kaggle CSV headers).
 
 ## Notebook workflow
 

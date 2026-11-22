@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 DIAMETERS = np.array([0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200])
-TARGET_COLUMNS = ["0.002", "0.0063", "0.02", "0.063", "0.2", "0.63", "2.0", "6.3", "20", "63", "200"]
+TARGET_COLUMNS = ["0.002", "0.0063", "0.02", "0.063", "0.2", "0.63", "2", "6.3", "20", "63", "200"]
 LOG_WEIGHTS = np.log10(DIAMETERS[1:] / DIAMETERS[:-1])
 
 
