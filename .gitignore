@@ -219,16 +219,23 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Competition data and generated files
+# Raw Kaggle competition data (excluded from public repo per competition rules)
 data/
 models/
 artifacts/
 outputs/
-submissions/
 *.pt
 *.pth
 *.ckpt
 *.onnx
 *.joblib
+
+# Credentials, API keys, and secrets (never commit)
 .env
 .env.*
+kaggle.json
+.kaggle/
+*.pem
+*.key
+*token*
+*secret*

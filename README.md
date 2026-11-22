@@ -34,15 +34,24 @@ src/
   dataset.py                       # Image-to-sample mapping and effective PPM metadata
   features.py                      # EXIF/PPM physical-scale crops, frozen DINOv2, aggregation
   model.py                         # Leakage-free LOOCV Ridge regression and submission writer
+submissions/
+  mean_baseline.csv                # Mean-curve baseline predictions (10 test samples)
+  submission.csv                   # Milestone 3 DINOv2 + Ridge predictions (10 test samples)
 tests/
   test_metric.py                   # EMD normalization, Wasserstein-1 equivalence, schema tests
   test_dataset.py                  # Filename/sample mapping, PPM, cropping, aggregation tests
   test_model.py                    # LOOCV leakage, constraint projection, submission tests
 requirements.txt
-.gitignore                         # Keeps raw data, submissions, and model caches out of Git
+.gitignore                         # Keeps raw competition data, model binaries, and secrets out of Git
 ```
 
-## Quick start
+## Dataset
+
+The [Kaggle competition dataset](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) contains **162 soil photographs** and **3 CSV files** (`Training_labels_updated.csv` with 24 soil samples, `sample_submission.csv` with 10 test samples, and `ppm_updated.csv` with camera calibration metadata for 5 phones).
+
+> **Why raw competition data is not committed:** This repository is public, and Kaggle competition rules restrict public redistribution of competition data (no permissive redistribution license is included with the dataset). Pretrained DINOv2 weights (`vit_small_patch14_dinov2.lvd142m`) are downloaded automatically at runtime by `timm`.
+
+## Quick start and training process
 
 Python 3.10+ recommended.
 
@@ -56,19 +65,27 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both the CLI and notebooks resolve data via `SOIL_DATA_DIR`, local `data/`, the local `kagglehub` cache, or `kagglehub.competition_download("soil-grain-size-from-photos")`. Outside Kaggle, KaggleHub requires Kaggle authentication (e.g., `KAGGLE_API_TOKEN`). Never commit tokens or credentials.
+Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both the CLI and notebooks resolve data via `SOIL_DATA_DIR`, local `data/`, the local `kagglehub` cache, or `kagglehub.competition_download("soil-grain-size-from-photos")`. Outside Kaggle, set `KAGGLE_API_TOKEN` in your local environment (never commit tokens or `.env` files).
 
-Run the mean baseline or the Milestone 3 DINOv2 + Ridge pipeline:
+Run the mean baseline or the Milestone 3 DINOv2 + Ridge training and submission pipeline:
 
 ```bash
 # Mean-curve baseline
 python -m src.baseline --labels data/Training_labels_updated.csv --submission-template data/sample_submission.csv --output submissions/mean_baseline.csv
 
-# Milestone 3: Frozen DINOv2 + nested LOOCV Ridge (writes submissions/submission.csv if better than baseline)
+# Milestone 3: Frozen DINOv2 + nested LOOCV Ridge
+# 1) Maps all 162 images & computes effective_ppm
+# 2) Extracts frozen DINOv2-S embeddings on 90mm + 150mm physical crops
+# 3) Aggregates embeddings per soil sample & evaluates leakage-free nested LOOCV
+# 4) Fits on all 24 samples (alpha=1000.0) and writes submissions/submission.csv
 python -m src.model --output submissions/submission.csv
 ```
 
 The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (verified against `Training_labels_updated.csv` and `sample_submission.csv`).
+
+## Submitting to Kaggle
+
+`submissions/submission.csv` contains validated cumulative grain-size predictions for all 10 test samples (matching `sample_submission.csv` row/column order, zero missing values, monotonic in `[0, 100]`, ending at `100.0`). Upload `submissions/submission.csv` via the Kaggle competition's **Submit Predictions** page (or `kaggle competitions submit -c soil-grain-size-from-photos -f submissions/submission.csv -m "DINOv2-S + Ridge"`).
 
 ## Notebook workflow
 
