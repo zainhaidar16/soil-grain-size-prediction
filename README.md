@@ -42,7 +42,7 @@ python -m pytest -q
 jupyter lab  # install jupyterlab separately if needed, or open .ipynb in VS Code
 ```
 
-Get the competition dataset through Kaggle according to its rules. Place CSV files in your local `data/` folder; do **not** commit the dataset or credentials.
+Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both notebooks use `kagglehub.competition_download("soil-grain-size-from-photos")` automatically if the project `data/` folder has no CSVs. The downloaded files are cached by KaggleHub and are **not** committed to Git. You can also put dataset files in `data/`, or set `SOIL_DATA_DIR` to an existing extracted dataset directory. Outside Kaggle, KaggleHub may require Kaggle authentication. Never commit tokens or credentials.
 
 Once you have verified the actual CSV filenames and schema:
 
@@ -60,7 +60,7 @@ Open the notebooks in order:
 1. `notebooks/01_dataset_exploration.ipynb` — inspect all local CSVs, preview photographs, check labels and metadata; deliberately does not assume mapping between images and soil samples.
 2. `notebooks/02_baseline_and_validation.ipynb` — validate the weighted-EMD calculation, evaluate a leave-one-soil-sample-out mean curve, and generate a baseline submission only when the official CSV files are available.
 
-Both notebooks import reusable functions from `src/`; notebook cells are unexecuted and no competition scores are claimed. **Run notebooks with the repository as working directory or from `notebooks/`** so their project-root discovery works.
+Both notebooks import reusable functions from `src/` and automatically resolve competition data through KaggleHub; notebook cells are unexecuted and no competition scores are claimed. **Run notebooks with the repository as working directory or from `notebooks/`** so their project-root discovery works.
 
 You can install `jupyterlab` separately (`pip install jupyterlab`) if you do not use VS Code or Kaggle's notebook environment.
 
