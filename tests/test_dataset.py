@@ -91,3 +91,27 @@ def test_aggregate_sample_features_order_and_missing():
 
     with pytest.raises(ValueError, match="No image features found"):
         aggregate_sample_features(feats, ["A", "A", "B"], ["A", "C"])
+
+
+def test_physical_texture_photometric_invariance(tmp_path):
+    import pandas as pd
+    from src.features import extract_physical_texture_features
+
+    rng = np.random.default_rng(123)
+    base = rng.integers(60, 180, size=(300, 300), dtype=np.uint8)
+    # Brightened & contrast-scaled version of the exact same texture
+    shifted = np.clip(base.astype(np.float32) * 0.5 + 90.0, 0, 255).astype(np.uint8)
+
+    p1 = tmp_path / "base.png"
+    p2 = tmp_path / "shifted.png"
+    Image.fromarray(base, mode="L").save(p1)
+    Image.fromarray(shifted, mode="L").save(p2)
+
+    manifest = pd.DataFrame([
+        {"image_path": str(p1), "effective_ppm": 2.0},
+        {"image_path": str(p2), "effective_ppm": 2.0},
+    ])
+    feats = extract_physical_texture_features(manifest, grid_px=128, crop_mm=150.0)
+    assert feats.shape == (2, 51)
+    assert np.isfinite(feats).all()
+    assert np.allclose(feats[0], feats[1], atol=0.05)

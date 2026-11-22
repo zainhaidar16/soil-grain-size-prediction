@@ -72,3 +72,22 @@ def test_write_model_submission_validates_and_reorders(tmp_path: Path):
 
     with pytest.raises(ValueError, match="do not match"):
         write_model_submission(["S1", "S2", "BAD_ID"], preds, template_path, out_path)
+
+
+def test_nested_pls_and_hybrid_ensemble():
+    from src.model import evaluate_nested_loocv_pls, fit_predict_hybrid_ensemble
+
+    x_tex, y = _synthetic_dataset(n_samples=12, n_features=6, seed=11)
+    x_dino, _ = _synthetic_dataset(n_samples=12, n_features=10, seed=11)
+
+    pls_res = evaluate_nested_loocv_pls(x_dino, y, components=(2, 3))
+    assert pls_res.predictions.shape == y.shape
+    assert validate_curves(pls_res.predictions).shape == y.shape
+    assert np.isfinite(pls_res.mean_emd) and 0.0 <= pls_res.mean_emd <= 500.0
+
+    hyb_preds = fit_predict_hybrid_ensemble(
+        x_tex[:10], x_dino[:10], y[:10], x_tex[10:], x_dino[10:],
+        ridge_alpha=10.0, pls_components=2, w_tex=0.5,
+    )
+    assert hyb_preds.shape == (2, 11)
+    validate_curves(hyb_preds)

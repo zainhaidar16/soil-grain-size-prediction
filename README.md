@@ -6,16 +6,18 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 ## Status
 
-**Milestone 3: Frozen DINOv2 + Ridge image-based model.** The repository includes verified image-to-sample mapping for all 162 photographs (127 train across 24 samples, 35 test across 10 samples), camera-scale (`effective_ppm`) physical-crop preprocessing, frozen DINOv2 (`vit_small_patch14_dinov2.lvd142m`) feature extraction, sample-level aggregation, and leakage-free nested leave-one-sample-out cross-validation (LOOCV) Ridge regression.
+**Milestone 4: Generalization and Model Improvement.** Following our Milestone 3 Kaggle submission (`Public LB EMD: 68.59422`, rank `602` vs. `45.160960` Nested LOOCV), we audited camera calibration, photometric shift, and cross-camera generalization (`Motorola Edge` ↔ `Samsung A52` across the 21 dual-camera training samples) and built a domain-robust hybrid model combining **L2-normalized physically calibrated multi-scale FFT/DoG texture features + Ridge** with **photometrically normalized (GrayNorm) frozen DINOv2-S + 2-component PLS**.
 
-### Validation results (24 training samples, LOOCV EMD, lower is better)
+### Validation results (24 training samples, strictly leakage-free, lower is better)
 
-| Model | LOOCV EMD | Delta vs. Baseline | Notes |
-| --- | ---: | ---: | --- |
-| Mean-curve baseline (`src/baseline.py`) | `89.888867` | — | Image-independent sample-level LOOCV |
-| Frozen DINOv2-S + Ridge (`src/model.py`) | **`45.160960`** | **`-44.727907` (-49.76%)** | Strictly leakage-free nested LOOCV (`alpha=1000.0`), multi-scale `90mm` + `150mm` physical crops, `cls_patch_mean` pooling; improves 22/24 samples |
-
-No Kaggle leaderboard score is claimed; all scores above are local sample-level LOOCV results.
+| Model | Nested LOOCV EMD | Cross-Camera EMD (21 dual-cam) | Train-vs-Test AdvAUC | Public Kaggle EMD | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Mean-curve baseline (`src/baseline.py`) | `89.888867` | — | — | — | Image-independent baseline |
+| Milestone 3: DINOv2-S RGB + Ridge (`submissions/submission.csv`) | `45.160960` | `48.552` (`M→S 53.86`, `S→M 43.24`) | `0.975` | `68.59422` | High color/contrast domain shift |
+| PhysTex-L2 150mm + Ridge (`B1-L2`) | `43.252` | `47.872` (`M→S 53.61`, `S→M 42.14`) | **`0.640`** | — | Camera-invariant 51-dim FFT/DoG/grad |
+| GrayNorm DINOv2-S + PLS (`A2-PLS`, `k=2`) | `41.498` | `46.270` (`M→S 47.50`, `S→M 45.04`) | `0.935` | — | Discards camera-noise directions |
+| **Milestone 4: Hybrid 50/50 (`B1-L2` + `A2-PLS`)** (`submissions/submission_m4_hybrid_phystex_dinov2pls.csv`) | **`41.062`** | **`45.1` (`M→S ~47.3`, `S→M ~42.6`)** | `0.640` / `0.935` | *(pending)* | Best on both LOOCV (`-4.10`) and Cross-Camera (`-3.5`) |
+| *Rejected*: PhysTex 3-crop + SVR-RBF (`C=100`) | `32.133` | `56.627` (`M→S 56.75`, `S→M 56.50`) | `0.560` | — | **Overfit** on Cross-Camera CV (`+24.5` gap) |
 
 ## Repository layout
 
@@ -32,15 +34,16 @@ src/
   metric.py                        # Log-diameter weighted EMD ([0, 500]) + curve validation
   baseline.py                      # Leave-one-soil-sample-out mean baseline and submission
   dataset.py                       # Image-to-sample mapping and effective PPM metadata
-  features.py                      # EXIF/PPM physical-scale crops, frozen DINOv2, aggregation
-  model.py                         # Leakage-free LOOCV Ridge regression and submission writer
+  features.py                      # EXIF/PPM physical crops, GrayNorm DINOv2, FFT/DoG texture
+  model.py                         # Leakage-free LOOCV Ridge, PLS, hybrid ensemble & CLI
 submissions/
   mean_baseline.csv                # Mean-curve baseline predictions (10 test samples)
-  submission.csv                   # Milestone 3 DINOv2 + Ridge predictions (10 test samples)
+  submission.csv                   # Milestone 3 DINOv2-S RGB + Ridge (Public LB: 68.59422)
+  submission_m4_hybrid_phystex_dinov2pls.csv  # Milestone 4 Hybrid (PhysTex-L2 Ridge + GrayNorm DINOv2 PLS)
 tests/
   test_metric.py                   # EMD normalization, Wasserstein-1 equivalence, schema tests
-  test_dataset.py                  # Filename/sample mapping, PPM, cropping, aggregation tests
-  test_model.py                    # LOOCV leakage, constraint projection, submission tests
+  test_dataset.py                  # Filename/sample mapping, PPM, cropping, physical texture tests
+  test_model.py                    # LOOCV leakage, PLS, hybrid ensemble, submission tests
 requirements.txt
 .gitignore                         # Keeps raw competition data, model binaries, and secrets out of Git
 ```
@@ -67,25 +70,24 @@ python -m pytest -q
 
 Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both the CLI and notebooks resolve data via `SOIL_DATA_DIR`, local `data/`, the local `kagglehub` cache, or `kagglehub.competition_download("soil-grain-size-from-photos")`. Outside Kaggle, set `KAGGLE_API_TOKEN` in your local environment (never commit tokens or `.env` files).
 
-Run the mean baseline or the Milestone 3 DINOv2 + Ridge training and submission pipeline:
+Run any of the three reproducible pipelines:
 
 ```bash
 # Mean-curve baseline
 python -m src.baseline --labels data/Training_labels_updated.csv --submission-template data/sample_submission.csv --output submissions/mean_baseline.csv
 
-# Milestone 3: Frozen DINOv2 + nested LOOCV Ridge
-# 1) Maps all 162 images & computes effective_ppm
-# 2) Extracts frozen DINOv2-S embeddings on 90mm + 150mm physical crops
-# 3) Aggregates embeddings per soil sample & evaluates leakage-free nested LOOCV
-# 4) Fits on all 24 samples (alpha=1000.0) and writes submissions/submission.csv
-python -m src.model --output submissions/submission.csv
+# Milestone 3 (preserved): Frozen DINOv2-S RGB + nested LOOCV Ridge
+python -m src.model --mode ridge --output submissions/submission.csv
+
+# Milestone 4 (recommended): Hybrid PhysTex-L2 Ridge + GrayNorm DINOv2-S PLS
+python -m src.model --mode hybrid --output submissions/submission_m4_hybrid_phystex_dinov2pls.csv
 ```
 
 The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (verified against `Training_labels_updated.csv` and `sample_submission.csv`).
 
 ## Submitting to Kaggle
 
-`submissions/submission.csv` contains validated cumulative grain-size predictions for all 10 test samples (matching `sample_submission.csv` row/column order, zero missing values, monotonic in `[0, 100]`, ending at `100.0`). Upload `submissions/submission.csv` via the Kaggle competition's **Submit Predictions** page (or `kaggle competitions submit -c soil-grain-size-from-photos -f submissions/submission.csv -m "DINOv2-S + Ridge"`).
+`submissions/submission_m4_hybrid_phystex_dinov2pls.csv` (and the preserved Milestone 3 baseline `submissions/submission.csv`) contain validated cumulative grain-size predictions for all 10 test samples (matching `sample_submission.csv` row/column order, zero missing values, monotonic in `[0, 100]`, ending at `100.0`). Upload `submissions/submission_m4_hybrid_phystex_dinov2pls.csv` via Kaggle's **Submit Predictions** page as the next submission.
 
 ## Notebook workflow
 
