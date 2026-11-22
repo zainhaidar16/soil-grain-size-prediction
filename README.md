@@ -6,7 +6,7 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 ## Status
 
-**Milestone 4: Generalization and Model Improvement.** Following our Milestone 3 Kaggle submission (`Public LB EMD: 68.59422`, rank `602` vs. `45.160960` Nested LOOCV), we audited camera calibration, photometric shift, and cross-camera generalization (`Motorola Edge` ↔ `Samsung A52` across the 21 dual-camera training samples) and built a domain-robust hybrid model combining **L2-normalized physically calibrated multi-scale FFT/DoG texture features + Ridge** with **photometrically normalized (GrayNorm) frozen DINOv2-S + 2-component PLS**.
+**Best-known public submission:** Milestone 3 DINOv2-S RGB + Ridge, saved as `submissions/submission.csv` (public EMD `68.59422`, rank `602` at submission time). The Milestone 4 hybrid improved local CV but worsened the Kaggle public EMD to **above 76** (rank worse than 700). Its separate CSV was removed; its model remains available only as a research comparison. Better local validation is not proof of better unseen-camera generalization.
 
 ### Validation results (24 training samples, strictly leakage-free, lower is better)
 
@@ -16,7 +16,7 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 | Milestone 3: DINOv2-S RGB + Ridge (`submissions/submission.csv`) | `45.160960` | `48.552` (`M→S 53.86`, `S→M 43.24`) | `0.975` | `68.59422` | High color/contrast domain shift |
 | PhysTex-L2 150mm + Ridge (`B1-L2`) | `43.252` | `47.872` (`M→S 53.61`, `S→M 42.14`) | **`0.640`** | — | Camera-invariant 51-dim FFT/DoG/grad |
 | GrayNorm DINOv2-S + PLS (`A2-PLS`, `k=2`) | `41.498` | `46.270` (`M→S 47.50`, `S→M 45.04`) | `0.935` | — | Discards camera-noise directions |
-| **Milestone 4: Hybrid 50/50 (`B1-L2` + `A2-PLS`)** (`submissions/submission_m4_hybrid_phystex_dinov2pls.csv`) | **`41.062`** | **`45.1` (`M→S ~47.3`, `S→M ~42.6`)** | `0.640` / `0.935` | *(pending)* | Best on both LOOCV (`-4.10`) and Cross-Camera (`-3.5`) |
+| **Milestone 4: Hybrid 50/50 (`B1-L2` + `A2-PLS`)** (research experiment) | **`41.062`** | **`45.1` (`M→S ~47.3`, `S→M ~42.6`)** | `0.640` / `0.935` | `>76` (worse) | Local CV improved but test generalization worsened |
 | *Rejected*: PhysTex 3-crop + SVR-RBF (`C=100`) | `32.133` | `56.627` (`M→S 56.75`, `S→M 56.50`) | `0.560` | — | **Overfit** on Cross-Camera CV (`+24.5` gap) |
 
 ## Repository layout
@@ -39,7 +39,6 @@ src/
 submissions/
   mean_baseline.csv                # Mean-curve baseline predictions (10 test samples)
   submission.csv                   # Milestone 3 DINOv2-S RGB + Ridge (Public LB: 68.59422)
-  submission_m4_hybrid_phystex_dinov2pls.csv  # Milestone 4 Hybrid (PhysTex-L2 Ridge + GrayNorm DINOv2 PLS)
 tests/
   test_metric.py                   # EMD normalization, Wasserstein-1 equivalence, schema tests
   test_dataset.py                  # Filename/sample mapping, PPM, cropping, physical texture tests
@@ -80,14 +79,12 @@ python -m src.baseline --labels data/Training_labels_updated.csv --submission-te
 python -m src.model --mode ridge --output submissions/submission.csv
 
 # Milestone 4 (recommended): Hybrid PhysTex-L2 Ridge + GrayNorm DINOv2-S PLS
-python -m src.model --mode hybrid --output submissions/submission_m4_hybrid_phystex_dinov2pls.csv
 ```
 
 The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (verified against `Training_labels_updated.csv` and `sample_submission.csv`).
 
 ## Submitting to Kaggle
 
-`submissions/submission_m4_hybrid_phystex_dinov2pls.csv` (and the preserved Milestone 3 baseline `submissions/submission.csv`) contain validated cumulative grain-size predictions for all 10 test samples (matching `sample_submission.csv` row/column order, zero missing values, monotonic in `[0, 100]`, ending at `100.0`). Upload `submissions/submission_m4_hybrid_phystex_dinov2pls.csv` via Kaggle's **Submit Predictions** page as the next submission.
 
 ## Notebook workflow
 
@@ -111,3 +108,7 @@ The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.0
 
 Never check in raw contest images, test labels, Kaggle tokens, downloaded model binaries, or unlicensed data. Follow [competition rules](https://www.kaggle.com/competitions/soil-grain-size-from-photos/rules) for external data, pretrained weights, and sharing.
 
+
+## Submission file policy
+
+Use **only** `submissions/submission.csv` as the final competition submission artifact. Do not create numbered, milestone-specific, or alternate submission CSV files. Experiment outputs should stay in memory or in ignored temporary scratch storage. When an experiment has been validated and explicitly selected for submission, overwrite `submissions/submission.csv` with the exact verified official-template row/column order; run physical-curve and missing-value checks before writing. Preserve old reproducibility through Git commits instead of duplicate CSV files. The best-known public submission currently remains Milestone 3. Never commit Kaggle tokens or credentials.
