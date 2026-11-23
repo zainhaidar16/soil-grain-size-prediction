@@ -207,3 +207,41 @@ def build_image_manifest(data_dir: Path, split: str) -> pd.DataFrame:
         raise ValueError(f"Split '{split}' has samples with zero mapped images: {missing_samples}")
 
     return manifest
+
+
+# 15 unique sampling sites for the 24 training soils (Soranzo et al., 2025, Table 1),
+# used to prevent site leakage during grouped cross-validation (e.g. 6 Steinakirchen gravels).
+SAMPLE_LOCATIONS: dict[str, str] = {
+    "F827": "Zistersdorf",
+    "G190": "Aichdorf",
+    "H030": "Wien",
+    "H037": "StCorona",
+    "H038": "StCorona",
+    "H126": "Wimpassing",
+    "H181": "Ybbs",
+    "H183": "Ybbs",
+    "H366": "Steinakirchen",
+    "H367": "Steinakirchen",
+    "H368": "Steinakirchen",
+    "H371": "Steinakirchen",
+    "H372": "Steinakirchen",
+    "H374": "Steinakirchen",
+    "H405": "Hagsdorf",
+    "H493": "Gajuri",
+    "H516": "Omding",
+    "H549": "Gottsdorf",
+    "H615": "Poechlarn",
+    "H616": "Simbach",
+    "H617": "Simbach",
+    "H637": "Krems",
+    "H666": "Heiligenkreuz",
+    "H668": "Heiligenkreuz",
+}
+
+
+def add_location_column(manifest: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of the manifest with a `location` column mapped from `SAMPLE_LOCATIONS`."""
+    out = manifest.copy()
+    out["location"] = out["sample_id"].map(SAMPLE_LOCATIONS)
+    return out
+

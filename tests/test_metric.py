@@ -70,3 +70,19 @@ def test_log_quantile_round_trip_and_weibull_fit():
     validate_curves(w_curve)
     assert emd_per_sample(curve, w_curve)[0] < 16.0
     assert emd_per_sample(curve, reconstructed)[0] < emd_per_sample(curve, w_curve)[0]
+
+
+def test_repair_isotonic_and_weibull_lnb_c():
+    from src.metric import fit_weibull_lnb_c, repair_isotonic, weibull_lnb_c_to_curve
+
+    raw = np.array([15.0, 10.0, 25.0, 55.0, 50.0, 70.0, 92.0, 88.0, 99.0, 102.0, 97.0])
+    repaired = repair_isotonic(raw)
+    validate_curves(repaired)
+    assert repaired[-1] == pytest.approx(100.0)
+
+    curve = np.array([1.0, 2.5, 6.5, 16.0, 38.0, 72.0, 96.0, 99.8, 100.0, 100.0, 100.0])
+    ln_b, c = fit_weibull_lnb_c(curve)
+    pred = weibull_lnb_c_to_curve(ln_b, c)
+    validate_curves(pred)
+    assert emd_per_sample(curve, pred)[0] < 5.0
+

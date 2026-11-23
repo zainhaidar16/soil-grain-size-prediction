@@ -370,3 +370,243 @@ def aggregate_sample_features(
             std_vec = group.std(axis=0)
             rows.append(np.concatenate([mean_vec, std_vec], axis=0))
     return np.vstack(rows)
+
+
+PPM_COMMON_DEFAULT = 4.5
+SHARP_PPM_THRESHOLD = 6.0
+TRAIN_LIKE_CROP_PX = 700
+DOG_BANDS_MM: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0)
+GRANULOMETRY_RADII_MM: tuple[float, ...] = (4.0, 8.0, 16.0)
+BAND5_SIGMAS_MM: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def compute_reference_jpeg_qtables(
+    train_manifest: pd.DataFrame,
+    sharp_ppm_threshold: float = SHARP_PPM_THRESHOLD,
+) -> tuple[float, dict[int, list[int]] | None]:
+    """Compute median low-PPM training scale and reference JPEG quantization tables."""
+    low = train_manifest[train_manifest["effective_ppm"] < sharp_ppm_threshold]
+    if low.empty:
+        low = train_manifest
+    train_ppm = float(low["effective_ppm"].median())
+    top_phone = str(low["phone"].value_counts().index[0])
+    ref_path = str(low[low["phone"] == top_phone]["image_path"].iloc[0])
+    with Image.open(ref_path) as ref_im:
+        qtables = getattr(ref_im, "quantization", None)
+    return train_ppm, qtables
+
+
+def load_common_scale_image(
+    image_path: str | Path,
+    effective_ppm: float,
+    ppm_common: float = PPM_COMMON_DEFAULT,
+    crop_frac: float = 0.8,
+    jpeg_quality: int = 75,
+) -> np.ndarray:
+    """Load RGB photo, center-crop, rescale to common px/mm, and re-encode JPEG."""
+    import cv2
+
+    with Image.open(image_path) as im:
+        arr = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
+    h, w = arr.shape[:2]
+    ch, cw = int(h * crop_frac), int(w * crop_frac)
+    arr = arr[(h - ch) // 2 : (h + ch) // 2, (w - cw) // 2 : (w + cw) // 2]
+    scale = ppm_common / float(effective_ppm)
+    new_w = max(8, int(arr.shape[1] * scale))
+    new_h = max(8, int(arr.shape[0] * scale))
+    arr = cv2.resize(arr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", arr[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)])
+    if not ok:
+        return arr
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)[:, :, ::-1]
+
+
+def load_train_like_image(
+    image_path: str | Path,
+    effective_ppm: float,
+    train_ppm: float,
+    ref_qtables: dict[int, list[int]] | None = None,
+    ppm_common: float = PPM_COMMON_DEFAULT,
+    sharp_ppm_threshold: float = SHARP_PPM_THRESHOLD,
+    crop_px: int = TRAIN_LIKE_CROP_PX,
+) -> np.ndarray:
+    """Normalize sharp high-PPM photos to training camera resolution/JPEG, then common scale."""
+    import io
+
+    with Image.open(image_path) as im:
+        img = ImageOps.exif_transpose(im).convert("RGB")
+    ppm = float(effective_ppm)
+    if ppm > sharp_ppm_threshold:
+        s_deg = float(train_ppm) / ppm
+        img = img.resize(
+            (max(64, round(img.width * s_deg)), max(64, round(img.height * s_deg))),
+            Image.Resampling.BOX,
+        )
+        buf = io.BytesIO()
+        try:
+            if ref_qtables is not None:
+                img.save(buf, "JPEG", qtables=ref_qtables, subsampling="4:2:0")
+            else:
+                img.save(buf, "JPEG", quality=75)
+        except Exception:
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=75)
+        buf.seek(0)
+        img = Image.open(buf).convert("RGB")
+        ppm = float(train_ppm)
+
+    s_com = ppm_common / ppm
+    resample = Image.Resampling.BOX if s_com < 1.0 else Image.Resampling.BILINEAR
+    img = img.resize(
+        (max(64, round(img.width * s_com)), max(64, round(img.height * s_com))),
+        resample,
+    )
+    arr = np.asarray(img)
+    side = min(int(crop_px), arr.shape[0], arr.shape[1])
+    y0, x0 = (arr.shape[0] - side) // 2, (arr.shape[1] - side) // 2
+    return arr[y0 : y0 + side, x0 : x0 + side]
+
+
+def _fast_gaussian_blur(gray: np.ndarray, sigma: float) -> np.ndarray:
+    import cv2
+
+    if sigma <= 6.0:
+        return cv2.GaussianBlur(gray, (0, 0), sigma)
+    factor = sigma / 3.0
+    small = cv2.resize(
+        gray,
+        (max(4, int(gray.shape[1] / factor)), max(4, int(gray.shape[0] / factor))),
+        interpolation=cv2.INTER_AREA,
+    )
+    small_sigma = float(np.sqrt(max(sigma ** 2 - (factor / 2.0) ** 2, 1.0)) / factor)
+    small = cv2.GaussianBlur(small, (0, 0), small_sigma)
+    return cv2.resize(small, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+
+def extract_dog_lab_granulometry_features(
+    rgb_img: np.ndarray,
+    ppm: float = PPM_COMMON_DEFAULT,
+) -> dict[str, float]:
+    """Extract 29 physically calibrated features: 8 DoG bands, 8 fractions, centroid, 6 Lab, 6 granulometry."""
+    import cv2
+
+    gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    gray = gray / (_fast_gaussian_blur(gray, 15.0 * ppm) + 1e-3)
+
+    feats: dict[str, float] = {}
+    prev = _fast_gaussian_blur(gray, 0.125 * ppm)
+    dog_vals: list[float] = []
+    for b in DOG_BANDS_MM:
+        cur = _fast_gaussian_blur(gray, b * ppm)
+        val = float(np.sqrt(np.mean((prev - cur) ** 2)))
+        feats[f"dog_{b}"] = val
+        dog_vals.append(val)
+        prev = cur
+
+    tot = sum(dog_vals) + 1e-9
+    for b, v in zip(DOG_BANDS_MM, dog_vals):
+        feats[f"dogfrac_{b}"] = v / tot
+    w = np.asarray(dog_vals, dtype=float)
+    feats["dog_centroid_log2mm"] = float(np.sum(w * np.log2(DOG_BANDS_MM)) / (w.sum() + 1e-9))
+
+    lab = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float32)
+    for i, ch in enumerate("Lab"):
+        feats[f"{ch}_mean"] = float(lab[:, i].mean())
+        feats[f"{ch}_std"] = float(lab[:, i].std())
+
+    for r_mm in GRANULOMETRY_RADII_MM:
+        r_px = r_mm * ppm
+        scale = max(1.0, r_px / 6.0)
+        if scale == 1.0:
+            sub = gray
+        else:
+            sub = cv2.resize(
+                gray,
+                (max(8, int(gray.shape[1] / scale)), max(8, int(gray.shape[0] / scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        rad = max(1, int(round(r_px / scale)))
+        ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1, 2 * rad + 1))
+        opened = cv2.morphologyEx(sub, cv2.MORPH_OPEN, ker)
+        closed = cv2.morphologyEx(sub, cv2.MORPH_CLOSE, ker)
+        denom = float(sub.mean()) + 1e-9
+        feats[f"gran_open_{int(r_mm)}mm"] = float((sub - opened).mean() / denom)
+        feats[f"gran_close_{int(r_mm)}mm"] = float((closed - sub).mean() / denom)
+    return feats
+
+
+def extract_dog_band5_features(
+    rgb_img: np.ndarray,
+    ppm: float = PPM_COMMON_DEFAULT,
+) -> dict[str, float]:
+    """Extract 5 log-DoG standard-deviation ratio bands spanning 0.25..8.0 mm."""
+    import cv2
+    from scipy import ndimage as ndi
+
+    gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    blurs = [ndi.gaussian_filter(gray, s * ppm) for s in BAND5_SIGMAS_MM]
+    base = float(gray.std()) + 1e-9
+    return {
+        f"b{k - 1}": float(np.log(float((blurs[k - 1] - blurs[k]).std()) / base + 1e-9))
+        for k in range(1, len(blurs))
+    }
+
+
+def estimate_coarse_stone_area(
+    image_path: str | Path,
+    effective_ppm: float,
+    ppm_stone: float = 2.0,
+    crop_frac: float = 0.85,
+) -> tuple[float, float]:
+    """Fast CPU physical coarse-stone area estimator returning (area_ge_63mm, area_ge_20mm)."""
+    import cv2
+    from scipy import ndimage as ndi
+
+    with Image.open(image_path) as im:
+        arr = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
+    h, w = arr.shape[:2]
+    ch, cw = int(h * crop_frac), int(w * crop_frac)
+    arr = arr[(h - ch) // 2 : (h + ch) // 2, (w - cw) // 2 : (w + cw) // 2]
+    s = ppm_stone / float(effective_ppm)
+    arr = cv2.resize(
+        arr,
+        (max(32, int(arr.shape[1] * s)), max(32, int(arr.shape[0] * s))),
+        interpolation=cv2.INTER_AREA,
+    )
+    gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    bg = cv2.GaussianBlur(gray, (0, 0), 40.0)
+    norm = gray / (bg + 1e-3)
+    smooth = cv2.GaussianBlur(norm, (0, 0), 2.5)
+    gx = cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3)
+    grad = np.hypot(gx, gy)
+
+    valleys = (norm < 0.82) | (grad > np.percentile(grad, 82))
+    free = (~valleys).astype(np.uint8)
+    free = cv2.morphologyEx(free, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    dist = ndi.distance_transform_edt(free)
+    seeds = (dist >= 11.0).astype(np.uint8)
+    n_lbl, markers = cv2.connectedComponents(seeds)
+    if n_lbl <= 1:
+        return 0.0, 0.0
+
+    _, inds = ndi.distance_transform_edt(markers == 0, return_indices=True)
+    grown = markers[inds[0], inds[1]] * (free > 0)
+    total_px = float(gray.size)
+    area_20 = 0.0
+    area_63 = 0.0
+    for lbl in range(1, n_lbl):
+        mask = grown == lbl
+        px = int(mask.sum())
+        if px == 0:
+            continue
+        eq_diam_mm = 2.0 * float(np.sqrt(px / np.pi)) / ppm_stone
+        inscribed_mm = 2.0 * float(dist[mask].max()) / ppm_stone
+        if inscribed_mm < 0.45 * eq_diam_mm:
+            continue
+        if eq_diam_mm >= 20.0:
+            area_20 += px
+        if eq_diam_mm >= 63.0:
+            area_63 += px
+    return float(area_63 / total_px), float(area_20 / total_px)
+

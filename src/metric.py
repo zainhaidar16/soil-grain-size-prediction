@@ -139,3 +139,59 @@ def weibull_to_curve(params: np.ndarray) -> np.ndarray:
     pred = 100.0 * (1.0 - np.exp(-((DIAMETERS / b) ** c)))
     pred[-1] = 100.0
     return project_curves(pred)[0]
+
+
+def repair_isotonic(raw: np.ndarray) -> np.ndarray:
+    """Project 11-point curves onto monotone [0, 100] CDFs via LOG_WEIGHTS-weighted isotonic regression."""
+    from sklearn.isotonic import IsotonicRegression
+
+    arr = np.asarray(raw, dtype=float)
+    squeeze = arr.ndim == 1
+    if squeeze:
+        arr = arr[None, :]
+    if arr.ndim != 2 or arr.shape[1] != 11 or not np.isfinite(arr).all():
+        raise ValueError("Expected finite 11-point curves")
+
+    iso = IsotonicRegression(y_min=0.0, y_max=100.0)
+    x_idx = np.arange(len(LOG_WEIGHTS), dtype=float)
+    out = np.empty_like(arr, dtype=float)
+    for i in range(len(arr)):
+        clipped = np.clip(arr[i, :-1], 0.0, 100.0)
+        out[i, :-1] = iso.fit_transform(x_idx, clipped, sample_weight=LOG_WEIGHTS)
+        out[i, -1] = 100.0
+    return out[0] if squeeze else out
+
+
+def weibull_lnb_c_to_curve(ln_b: float, c: float) -> np.ndarray:
+    """Evaluate 2-parameter Weibull F(d) = 100 * (1 - exp(-(d / exp(ln_b))^c)) at all 11 DIAMETERS."""
+    b = float(np.exp(np.clip(ln_b, -10.0, 10.0)))
+    shape = max(float(c), 0.05)
+    pred = 100.0 * (1.0 - np.exp(-np.power(DIAMETERS / b, shape)))
+    pred[-1] = 100.0
+    return project_curves(pred)[0]
+
+
+def fit_weibull_lnb_c(curve: np.ndarray) -> np.ndarray:
+    """Fit Weibull (ln_b, c) by 2D grid initialization + Nelder-Mead minimization of exact EMD."""
+    from scipy.optimize import minimize
+
+    row = validate_curves(curve)[0]
+    lnb_grid = np.linspace(np.log(1e-3), np.log(2e3), 80)
+    c_grid = np.linspace(0.08, 3.0, 60)
+    lg, cg = np.meshgrid(lnb_grid, c_grid, indexing="ij")
+    grid = np.column_stack([lg.ravel(), cg.ravel()])
+    g_curves = 100.0 * (1.0 - np.exp(-np.power(DIAMETERS[None, :-1] / np.exp(grid[:, :1]), grid[:, 1:])))
+    errs = np.sum(LOG_WEIGHTS[None, :] * np.abs(g_curves - row[None, :-1]), axis=1)
+    best_idx = int(np.argmin(errs))
+    best_p = grid[best_idx]
+    best_e = float(errs[best_idx])
+
+    def loss(p: np.ndarray) -> float:
+        pred = weibull_lnb_c_to_curve(float(p[0]), float(p[1]))
+        return float(np.sum(LOG_WEIGHTS * np.abs(pred[:-1] - row[:-1])))
+
+    res = minimize(loss, best_p, method="Nelder-Mead")
+    if float(res.fun) < best_e:
+        return np.array([float(res.x[0]), max(float(res.x[1]), 0.05)], dtype=float)
+    return np.array([float(best_p[0]), float(best_p[1])], dtype=float)
+

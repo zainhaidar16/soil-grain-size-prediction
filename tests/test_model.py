@@ -101,3 +101,61 @@ def test_logq_ensemble_produces_valid_curves():
     preds = fit_predict_logq_ensemble(x_phys[:10], x_dino[:10], y[:10], x_phys[10:], x_dino[10:])
     assert preds.shape == (2, 11)
     validate_curves(preds)
+
+
+def test_routed_specialists_cobble_fines_and_grouped_cv():
+    from src.metric import fit_weibull_lnb_c
+    from src.model import (
+        apply_clean_sand_fines_correction,
+        apply_cobble_correction,
+        evaluate_grouped_location_cv,
+        fit_predict_hybrid_weibull_ridge,
+        fit_predict_logit_pca_ridge,
+        fit_predict_weibull_ridge,
+        soft_route_predictions,
+    )
+
+    x, y = _synthetic_dataset(n_samples=12, n_features=8, seed=23)
+    sids = [f"S{i}" for i in range(12)]
+    # Duplicate each sample as 2 photos
+    x_ph = np.repeat(x, 2, axis=0)
+    y_ph = np.repeat(y, 2, axis=0)
+    w_ph = np.repeat(np.vstack([fit_weibull_lnb_c(r) for r in y]), 2, axis=0)
+    sid_ph = [s for s in sids for _ in range(2)]
+    loc_ph = [f"L{i // 2}" for i in range(12) for _ in range(2)]
+
+    pg = fit_predict_logit_pca_ridge(x_ph[:20], y_ph[:20], sid_ph[:20], x_ph[20:], sid_ph[20:])
+    ps2 = fit_predict_weibull_ridge(x_ph[:20], w_ph[:20], x_ph[20:], sid_ph[20:])
+    ps1 = fit_predict_hybrid_weibull_ridge(
+        x_ph[:20, :5], x_ph[:20], w_ph[:20], x_ph[20:, :5], x_ph[20:], sid_ph[20:], n_pca=4
+    )
+    for df in (pg, ps2, ps1):
+        assert df.shape == (2, 11)
+        validate_curves(df.to_numpy(dtype=float))
+
+    routed = soft_route_predictions(pg, ps1, threshold_2mm=90.0, scale=5.0)
+    validate_curves(routed.to_numpy(dtype=float))
+
+    cob = apply_cobble_correction(routed, {"S10": (0.20, 0.60)})
+    validate_curves(cob.to_numpy(dtype=float))
+    assert cob.loc["S10", "20"] <= 40.0 + 1e-6
+    assert cob.loc["S10", "63"] <= 80.0 + 1e-6
+
+    mask = pd.Series([True, False], index=routed.index)
+    cleaned = apply_clean_sand_fines_correction(routed, mask, target_063_pct=2.78)
+    validate_curves(cleaned.to_numpy(dtype=float))
+    assert cleaned.loc["S10", "0.063"] <= 2.78 + 1e-6
+
+    manifest = pd.DataFrame({"sample_id": sid_ph, "location": loc_ph})
+    labels_df = pd.DataFrame(y, index=sids, columns=TARGET_COLUMNS)
+    mean_e, per_s, oof = evaluate_grouped_location_cv(
+        lambda tr, va: fit_predict_logit_pca_ridge(
+            x_ph[tr], y_ph[tr], [sid_ph[i] for i in tr], x_ph[va], [sid_ph[i] for i in va]
+        ),
+        manifest,
+        labels_df,
+    )
+    assert np.isfinite(mean_e) and 0.0 <= mean_e <= 500.0
+    assert oof.shape == (12, 11)
+    assert len(per_s) == 12
+

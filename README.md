@@ -38,6 +38,31 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 | F1 | PhysV2-Rob (33d) → Weibull (PLS) | `43.02 [32.6, 55.2]` | `49.81 (53.1/46.5)` | `45.14` | `27.7` | `99.7` | `0.96` |
 | F2 | DINOv2-S RGB → Weibull (Ridge) | `43.45 [32.4, 56.6]` | `45.51 (47.5/43.5)` | `48.69` | `20.2` | `94.0` | `0.97` |
 
+### 15-Site Location CV & Cross-Camera Benchmark (Reference Reproduction, Ablations & Improvements)
+
+Using the true **15-site location grouping** (Soranzo et al., 2025 — preventing leakage across the 6 Steinakirchen gravels and other paired sites) and **site-grouped Cross-Phone CV** (`Motorola Edge` ↔ `Samsung A52`), we faithfully reproduced the reference notebook *"Photos to Sieve Curves: The Fines Question"* (test curve diff `0.01–0.03` mean EMD vs. `pick1`/`pick2`) and ran controlled ablations and architectural improvements:
+
+| Candidate / Variant | 15-Site OOF EMD | Median | Sand (11) | Gravel (13) | Cross-Phone EMD | Notes / Reported Ref. LB |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Ref `GRAVEL_MODEL`: Logit-PCA (`cs`, 29d) | `40.33` | `31.43` | `40.55` | `40.14` | `46.81` | Common-scale JPEG q75 |
+| Ref `GRAVEL_MODEL`: Logit-PCA (`tl`, 29d) | `39.62` | `33.27` | `40.19` | `39.14` | `44.52` | Train-like JPEG improves both CV & cross-phone |
+| Ref `SAND_MODEL_2`: Weibull (`tl`, 29d) | `39.51` | `33.06` | `44.58` | `35.23` | `45.39` | `cs` ablation worsens Cross-Phone to `53.35` (`+7.96`) |
+| Ref `SAND_MODEL_1`: Weibull (`b5` + ResNet-50) | `47.19` | `43.09` | `52.80` | `42.44` | `57.66` | Lower predicted fines on test sands (`11–24%`) |
+| Ref Hard Routed `Pick 2` (`cs` → `S2`) | `41.86` | `33.52` | `44.58` | `39.55` | `47.32` | Reported Ref. Public LB: `26.89` (with SAM cobble step) |
+| Ref Hard Routed `Pick 1` (`cs` → `S1`) | `44.22` | `33.34` | `52.80` | `36.96` | `58.46` | Reported Ref. Public LB: `23.17` (with SAM cobble step) |
+| Ref `Pick 3` (`Pick 1` + `2.78%` Clean-Sand Fines) | `51.36` | `37.77` | `65.78` | `39.15` | `64.94` | Reported Ref. Public LB: `19.42515` (`+7.14` worse on local OOF) |
+| Our `DINOv2-S` LKM (`LogQ11`) | `40.80` | `29.91` | `39.49` | `41.91` | `41.55` | Strongest single-model cross-camera stability |
+| Our `E-A` (`DINO-LKM` + `PhysV2-KRR`) | `42.05` | `31.74` | `40.40` | `43.45` | `45.76` | Active `submissions/submission.csv` (no cobble step) |
+| **New Sand**: Weibull (`b5` + `DINOv2-GN`) | `47.17` | `42.96` | `52.80` | `42.42` | `54.20` | Beats ResNet-50 by `-3.46` Cross-Phone EMD |
+| **Improved Blend**: `LogitPCA(tl)` + `Weibull(tl)` + `DINO-LKM` | **`37.83`** | **`28.16`** | **`39.53`** | **`36.39`** | **`41.81`** | **Best overall 15-site OOF & Cross-Phone** (+ cobble step on test) |
+| **Soft-Routed Hybrid**: `Blend` → `b5+DINO-GN` (`s=5`) | `40.06` | `29.70` | `48.38` | `33.02` | `46.46` | Beats Ref `Pick 1` by `-4.16` OOF and `-12.00` Cross-Phone |
+
+**Key ablation takeaways:**
+1. **Unseen cobbles (`Muenster`, `Lidl WHV`)** are the primary cause of the `~70 → ~27` LB gap: no training soil contains cobbles (`F(20 mm) = 76.5–100%` in train), whereas physical coarse-stone area correction shifts `Muenster` by `73.4` EMD and `Lidl WHV` by `45.5` EMD.
+2. **Train-like JPEG/scale normalization (`tl`)** cuts Cross-Phone EMD by `-7.96` on `SAND_MODEL_2` (`53.35 → 45.39`) and `-2.29` on `GRAVEL_MODEL` (`46.81 → 44.52`).
+3. **Calibrated soft sand/gravel routing** (`sigmoid` around `F(2 mm) = 90%`) outperforms hard routing on both 15-site OOF (`-1.48` to `-2.22` EMD) and Cross-Phone CV (`-1.39` to `-4.55` EMD).
+4. **Clean-sand fines correction (`2.78%` at `0.063 mm`)** is an assumption-dependent prior: at `4.5 px/mm`, a `0.063 mm` silt grain is `0.28 px` wide (below optical resolution), and 10 of 11 sand-like training soils are silty (`35–90%` passing `0.063 mm`). Applying it blindly hurts local 15-site OOF by `+7.14` EMD (helping only `H616` by `-13.89` while hurting all 10 silty sands by `+7` to `+23` EMD). Data-driven `F(0.063 mm)` regression also predicts `~40%` for `H616` due to this label imbalance.
+
 ## Repository layout
 
 ```text

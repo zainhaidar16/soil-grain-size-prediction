@@ -396,6 +396,223 @@ def fit_predict_logq_ensemble(
     return np.vstack([log_quantiles_to_curve(r, DEFAULT_QUANTILE_PROBS) for r in q_blend])
 
 
+def _photo_soil_weights(sample_ids: Sequence[str]) -> np.ndarray:
+    s = pd.Series(list(sample_ids))
+    vc = s.value_counts()
+    return (1.0 / s.map(vc)).to_numpy(dtype=float)
+
+
+def _aggregate_photo_curves(pred_photo: np.ndarray, sample_ids: Sequence[str]) -> pd.DataFrame:
+    from src.metric import repair_isotonic
+
+    df = pd.DataFrame(pred_photo, columns=TARGET_COLUMNS)
+    df["sample_id"] = list(sample_ids)
+    grouped = df.groupby("sample_id", sort=False)[TARGET_COLUMNS].mean()
+    repaired = repair_isotonic(grouped.to_numpy(dtype=float))
+    return pd.DataFrame(repaired, index=grouped.index, columns=TARGET_COLUMNS)
+
+
+def fit_predict_logit_pca_ridge(
+    x_train: np.ndarray,
+    y_train_photo: np.ndarray,
+    train_sample_ids: Sequence[str],
+    x_eval: np.ndarray,
+    eval_sample_ids: Sequence[str],
+    alpha: float = 30.0,
+    n_components: int = 3,
+    eps: float = 0.5,
+) -> pd.DataFrame:
+    """Per-photo weighted Ridge in 3-PC logit-CDF space, decoded per photo and averaged per soil."""
+    from sklearn.decomposition import PCA
+
+    sc = StandardScaler().fit(x_train)
+    p_tr = np.clip(y_train_photo, eps, 100.0 - eps) / 100.0
+    z_tr = np.log(p_tr / (1.0 - p_tr))
+    k = max(1, min(int(n_components), z_tr.shape[0] - 1, z_tr.shape[1]))
+    pca = PCA(n_components=k).fit(z_tr)
+    w = _photo_soil_weights(train_sample_ids)
+    reg = Ridge(alpha=float(alpha)).fit(sc.transform(x_train), pca.transform(z_tr), sample_weight=w)
+    z_ev = pca.inverse_transform(reg.predict(sc.transform(x_eval)))
+    pred_photo = 100.0 / (1.0 + np.exp(-np.clip(z_ev, -20.0, 20.0)))
+    pred_photo[:, -1] = 100.0
+    return _aggregate_photo_curves(pred_photo, eval_sample_ids)
+
+
+def fit_predict_weibull_ridge(
+    x_train: np.ndarray,
+    weibull_train_photo: np.ndarray,
+    x_eval: np.ndarray,
+    eval_sample_ids: Sequence[str],
+    alpha: float = 100.0,
+) -> pd.DataFrame:
+    """Per-photo Ridge predicting Weibull (ln_b, c), decoded per photo and averaged per soil."""
+    from src.metric import weibull_lnb_c_to_curve
+
+    sc = StandardScaler().fit(x_train)
+    reg = Ridge(alpha=float(alpha)).fit(sc.transform(x_train), weibull_train_photo)
+    w_ev = reg.predict(sc.transform(x_eval))
+    pred_photo = np.vstack([weibull_lnb_c_to_curve(float(a), float(b)) for a, b in w_ev])
+    return _aggregate_photo_curves(pred_photo, eval_sample_ids)
+
+
+def fit_predict_hybrid_weibull_ridge(
+    x_hand_train: np.ndarray,
+    x_emb_train: np.ndarray,
+    weibull_train_photo: np.ndarray,
+    x_hand_eval: np.ndarray,
+    x_emb_eval: np.ndarray,
+    eval_sample_ids: Sequence[str],
+    alpha: float = 100.0,
+    n_pca: int = 8,
+    emb_weight: float = 0.10,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """5 DoG bands + weighted PCA(backbone embeddings) -> Weibull (ln_b, c) Ridge."""
+    from sklearn.decomposition import PCA
+    from src.metric import weibull_lnb_c_to_curve
+
+    sh = StandardScaler().fit(x_hand_train)
+    se = StandardScaler().fit(x_emb_train)
+    k = max(1, min(int(n_pca), len(x_emb_train) - 1, x_emb_train.shape[1]))
+    pca = PCA(n_components=k, svd_solver="randomized", random_state=seed)
+    c_tr = pca.fit_transform(se.transform(x_emb_train))
+    c_ev = pca.transform(se.transform(x_emb_eval))
+    sp = StandardScaler().fit(c_tr)
+    xtr = np.hstack([sh.transform(x_hand_train), float(emb_weight) * sp.transform(c_tr)])
+    xev = np.hstack([sh.transform(x_hand_eval), float(emb_weight) * sp.transform(c_ev)])
+    w_ev = Ridge(alpha=float(alpha)).fit(xtr, weibull_train_photo).predict(xev)
+    pred_photo = np.vstack([weibull_lnb_c_to_curve(float(a), float(b)) for a, b in w_ev])
+    return _aggregate_photo_curves(pred_photo, eval_sample_ids)
+
+
+def soft_route_predictions(
+    gravel_preds: pd.DataFrame,
+    sand_preds: pd.DataFrame,
+    router_preds: pd.DataFrame | None = None,
+    threshold_2mm: float = 90.0,
+    scale: float = 5.0,
+) -> pd.DataFrame:
+    """Blend gravel and sand specialist curves via sigmoid weight on predicted F(2 mm).
+
+    When `scale <= 0`, falls back to hard routing (`F(2 mm) >= threshold_2mm`).
+    """
+    from src.metric import repair_isotonic
+
+    idx = gravel_preds.index
+    pg = gravel_preds.loc[idx, TARGET_COLUMNS].to_numpy(dtype=float)
+    ps = sand_preds.loc[idx, TARGET_COLUMNS].to_numpy(dtype=float)
+    pr = pg if router_preds is None else router_preds.loc[idx, TARGET_COLUMNS].to_numpy(dtype=float)
+    f2 = pr[:, TARGET_COLUMNS.index("2")]
+    if scale <= 0.0:
+        w = (f2 >= float(threshold_2mm)).astype(float)
+    else:
+        w = 1.0 / (1.0 + np.exp(-np.clip((f2 - float(threshold_2mm)) / float(scale), -20.0, 20.0)))
+    blended = (1.0 - w[:, None]) * pg + w[:, None] * ps
+    return pd.DataFrame(repair_isotonic(blended), index=idx, columns=TARGET_COLUMNS)
+
+
+def apply_cobble_correction(
+    preds: pd.DataFrame,
+    stone_areas: dict[str, tuple[float, float]],
+    min_a20: float = 0.10,
+    max_mass: float = 0.90,
+) -> pd.DataFrame:
+    """Cap passing percentages at 20 mm and 63 mm using coarse-stone area fractions (a63, a20)."""
+    from src.metric import repair_isotonic
+
+    out = preds.copy()
+    i20 = TARGET_COLUMNS.index("20")
+    i63 = TARGET_COLUMNS.index("63")
+    for sid, (a63, a20) in stone_areas.items():
+        if sid not in out.index or float(a20) < float(min_a20):
+            continue
+        row = out.loc[sid, TARGET_COLUMNS].to_numpy(dtype=float).copy()
+        m20 = min(float(a20), float(max_mass))
+        m63 = min(float(a63), m20)
+        f20 = min(row[i20], 100.0 * (1.0 - m20))
+        f63 = max(min(row[i63], 100.0 * (1.0 - m63)), f20)
+        row[:i20] *= f20 / max(row[i20], 1e-6)
+        row[i20], row[i63] = f20, f63
+        out.loc[sid, TARGET_COLUMNS] = repair_isotonic(row)
+    return out
+
+
+def apply_clean_sand_fines_correction(
+    preds: pd.DataFrame,
+    is_sand_mask: pd.Series,
+    target_063_pct: float = 2.78,
+) -> pd.DataFrame:
+    """Scale <=0.063 mm sieves of routed sands down to `target_063_pct` (optional clean-sand prior)."""
+    from src.metric import repair_isotonic
+
+    out = preds.copy()
+    for sid in out.index:
+        if bool(is_sand_mask.loc[sid]):
+            row = out.loc[sid, TARGET_COLUMNS].to_numpy(dtype=float).copy()
+            f063 = row[3]
+            if f063 > float(target_063_pct) and f063 > 1e-6:
+                row[:4] *= float(target_063_pct) / f063
+                out.loc[sid, TARGET_COLUMNS] = repair_isotonic(row)
+    return out
+
+
+def evaluate_grouped_location_cv(
+    fit_predict_fn,
+    train_manifest: pd.DataFrame,
+    labels_by_sample: pd.DataFrame,
+) -> tuple[float, pd.Series, pd.DataFrame]:
+    """Run leak-free Leave-One-Location-Out CV over the 15 sampling sites."""
+    if "location" not in train_manifest.columns:
+        raise ValueError("train_manifest must include a 'location' column")
+    oof_parts: list[pd.DataFrame] = []
+    locs = sorted(train_manifest["location"].dropna().unique())
+    for loc in locs:
+        tr_idx = np.where((train_manifest["location"] != loc).to_numpy())[0]
+        va_idx = np.where((train_manifest["location"] == loc).to_numpy())[0]
+        oof_parts.append(fit_predict_fn(tr_idx, va_idx))
+    oof_df = pd.concat(oof_parts).loc[labels_by_sample.index, TARGET_COLUMNS]
+    per_sample = pd.Series(
+        emd_per_sample(labels_by_sample[TARGET_COLUMNS].to_numpy(dtype=float), oof_df.to_numpy(dtype=float)),
+        index=labels_by_sample.index,
+    )
+    return float(per_sample.mean()), per_sample, oof_df
+
+
+def evaluate_cross_phone_cv(
+    fit_predict_fn,
+    train_manifest: pd.DataFrame,
+    labels_by_sample: pd.DataFrame,
+    phone_pair: tuple[str, str] = ("Motorola Edge", "Samsung A52"),
+) -> float:
+    """Run site-grouped cross-camera CV between two phones on soils photographed with both."""
+    if "location" not in train_manifest.columns:
+        raise ValueError("train_manifest must include a 'location' column")
+    ph_a, ph_b = phone_pair
+    both_cam = {
+        sid
+        for sid, grp in train_manifest.groupby("sample_id")
+        if {ph_a, ph_b} <= set(grp["phone"])
+    }
+    preds: list[pd.DataFrame] = []
+    for loc in sorted(train_manifest["location"].dropna().unique()):
+        for src_ph, dst_ph in ((ph_a, ph_b), (ph_b, ph_a)):
+            tr_idx = np.where(
+                (train_manifest["location"] != loc).to_numpy()
+                & (train_manifest["phone"] == src_ph).to_numpy()
+            )[0]
+            va_idx = np.where(
+                (train_manifest["location"] == loc).to_numpy()
+                & (train_manifest["phone"] == dst_ph).to_numpy()
+                & train_manifest["sample_id"].isin(both_cam).to_numpy()
+            )[0]
+            if len(tr_idx) and len(va_idx):
+                preds.append(fit_predict_fn(tr_idx, va_idx))
+    cross_df = pd.concat(preds)
+    y_true = labels_by_sample.loc[cross_df.index, TARGET_COLUMNS].to_numpy(dtype=float)
+    return float(emd_per_sample(y_true, cross_df[TARGET_COLUMNS].to_numpy(dtype=float)).mean())
+
+
+
 def main() -> None:
     import argparse
 

@@ -125,3 +125,33 @@ def test_physical_texture_photometric_invariance(tmp_path):
     mask = select_camera_robust_features(x_tr, x_m, x_s, x_te)
     assert not mask[0] and not mask[1]
     assert mask[2] and mask[3]
+
+
+def test_sample_locations_and_dog_features(tmp_path):
+    import pandas as pd
+    from src.dataset import SAMPLE_LOCATIONS, add_location_column
+    from src.features import (
+        estimate_coarse_stone_area,
+        extract_dog_band5_features,
+        extract_dog_lab_granulometry_features,
+    )
+
+    assert len(SAMPLE_LOCATIONS) == 24
+    assert len(set(SAMPLE_LOCATIONS.values())) == 15
+    df = add_location_column(pd.DataFrame({"sample_id": ["H366", "H374", "H616"]}))
+    assert df["location"].tolist() == ["Steinakirchen", "Steinakirchen", "Simbach"]
+
+    rng = np.random.default_rng(7)
+    rgb = rng.integers(40, 220, size=(256, 256, 3), dtype=np.uint8)
+    f29 = extract_dog_lab_granulometry_features(rgb, ppm=4.5)
+    f5 = extract_dog_band5_features(rgb, ppm=4.5)
+    assert len(f29) == 29
+    assert len(f5) == 5
+    assert all(np.isfinite(list(f29.values())))
+    assert all(np.isfinite(list(f5.values())))
+
+    img_path = tmp_path / "synth.jpg"
+    Image.fromarray(rgb, mode="RGB").save(img_path)
+    a63, a20 = estimate_coarse_stone_area(img_path, effective_ppm=4.5)
+    assert 0.0 <= a63 <= a20 <= 1.0
+
