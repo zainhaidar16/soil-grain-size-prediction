@@ -294,6 +294,108 @@ def fit_predict_hybrid_ensemble(
     return project_curves(w_tex * pred_tex + (1.0 - w_tex) * pred_dino)
 
 
+def standardize_winsor(
+    x_train: np.ndarray,
+    x_eval: np.ndarray,
+    clip_z: float = 3.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit standardization on training fold only and winsorize z-scores to [-clip_z, clip_z]."""
+    mu = x_train.mean(axis=0, keepdims=True)
+    sd = x_train.std(axis=0, keepdims=True)
+    sd[sd == 0.0] = 1.0
+    z_tr = np.clip((x_train - mu) / sd, -clip_z, clip_z)
+    z_ev = np.clip((x_eval - mu) / sd, -clip_z, clip_z)
+    return z_tr, z_ev
+
+
+def weighted_median_matrix(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Compute column-wise weighted median (L1-optimal point estimate in quantile space)."""
+    w = np.asarray(weights, dtype=float)
+    w = w / (w.sum() + 1e-12)
+    out = np.zeros(values.shape[1], dtype=float)
+    for col in range(values.shape[1]):
+        order = np.argsort(values[:, col])
+        cw = np.cumsum(w[order])
+        idx = int(np.searchsorted(cw, 0.5))
+        out[col] = values[order[min(idx, len(order) - 1)], col]
+    return out
+
+
+def fit_predict_krr_rbf_raw(
+    x_train: np.ndarray,
+    t_train: np.ndarray,
+    x_eval: np.ndarray,
+    alpha: float = 0.1,
+    gamma_mult: float = 0.3,
+    clip_z: float = 3.5,
+) -> np.ndarray:
+    """Fit winsorized RBF Kernel Ridge regression on arbitrary targets (e.g. log-quantiles)."""
+    z_tr, z_ev = standardize_winsor(x_train, x_eval, clip_z=clip_z)
+    gamma = float(gamma_mult) / max(z_tr.shape[1], 1)
+    d2_tr = np.sum((z_tr[:, None, :] - z_tr[None, :, :]) ** 2, axis=-1)
+    k_mat = np.exp(-gamma * d2_tr)
+    k_mat[np.diag_indices(len(z_tr))] += float(alpha)
+    dual_w = np.linalg.solve(k_mat, t_train)
+    d2_ev = np.sum((z_ev[:, None, :] - z_tr[None, :, :]) ** 2, axis=-1)
+    return np.exp(-gamma * d2_ev) @ dual_w
+
+
+def fit_predict_latent_kernel_median_raw(
+    x_train: np.ndarray,
+    t_train: np.ndarray,
+    x_eval: np.ndarray,
+    n_components: int = 1,
+    bandwidth: float = 0.7,
+    clip_z: float = 3.5,
+) -> np.ndarray:
+    """Project to PLS latent space and predict Gaussian-kernel weighted median of targets."""
+    from sklearn.cross_decomposition import PLSRegression
+
+    z_tr, z_ev = standardize_winsor(x_train, x_eval, clip_z=clip_z)
+    k = max(1, min(int(n_components), len(z_tr) - 1, z_tr.shape[1]))
+    pls = PLSRegression(n_components=k).fit(z_tr, t_train)
+    u_tr = pls.transform(z_tr)
+    u_ev = pls.transform(z_ev)
+    u_sd = u_tr.std(axis=0, keepdims=True) + 1e-8
+    u_tr = u_tr / u_sd
+    u_ev = u_ev / u_sd
+
+    rows = []
+    for r in range(len(u_ev)):
+        d2 = np.sum((u_tr - u_ev[r : r + 1]) ** 2, axis=-1)
+        weights = np.exp(-0.5 * d2 / (float(bandwidth) ** 2))
+        rows.append(weighted_median_matrix(t_train, weights))
+    return np.vstack(rows)
+
+
+def fit_predict_logq_ensemble(
+    x_phys_train: np.ndarray,
+    x_dino_train: np.ndarray,
+    y_train: np.ndarray,
+    x_phys_eval: np.ndarray,
+    x_dino_eval: np.ndarray,
+    krr_alpha: float = 0.1,
+    krr_gamma_mult: float = 0.3,
+    lkm_components: int = 1,
+    lkm_bandwidth: float = 0.7,
+    w_phys: float = 0.5,
+) -> np.ndarray:
+    """Equal-weight log-quantile ensemble: PhysV2-Rob KRR-RBF + DINOv2-S Latent-Kernel-Median."""
+    from src.metric import DEFAULT_QUANTILE_PROBS, curve_to_log_quantiles, log_quantiles_to_curve
+
+    if not (0.0 <= w_phys <= 1.0):
+        raise ValueError("w_phys must be in [0, 1]")
+    y_q = np.vstack([curve_to_log_quantiles(row, DEFAULT_QUANTILE_PROBS) for row in validate_curves(y_train)])
+    q_phys = fit_predict_krr_rbf_raw(
+        x_phys_train, y_q, x_phys_eval, alpha=krr_alpha, gamma_mult=krr_gamma_mult
+    )
+    q_dino = fit_predict_latent_kernel_median_raw(
+        x_dino_train, y_q, x_dino_eval, n_components=lkm_components, bandwidth=lkm_bandwidth
+    )
+    q_blend = w_phys * q_phys + (1.0 - w_phys) * q_dino
+    return np.vstack([log_quantiles_to_curve(r, DEFAULT_QUANTILE_PROBS) for r in q_blend])
+
+
 def main() -> None:
     import argparse
 
@@ -304,15 +406,16 @@ def main() -> None:
         DINOv2FeatureExtractor,
         aggregate_sample_features,
         extract_physical_texture_features,
+        select_camera_robust_features,
     )
 
-    parser = argparse.ArgumentParser(description="Frozen DINOv2 / Hybrid grain-size model.")
-    parser.add_argument("--mode", choices=("ridge", "hybrid"), default="ridge")
+    parser = argparse.ArgumentParser(description="Frozen DINOv2 / Log-Quantile grain-size model.")
+    parser.add_argument("--mode", choices=("ridge", "logq_ensemble"), default="ridge")
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--model-name", type=str, default=DEFAULT_DINOV2_MODEL)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--w-tex", type=float, default=0.5)
+    parser.add_argument("--write-submission", action="store_true")
     parser.add_argument("--output", type=Path, default=Path("submissions/submission.csv"))
     args = parser.parse_args()
 
@@ -327,68 +430,46 @@ def main() -> None:
     y_train = labels_df[TARGET_COLUMNS].to_numpy(dtype=float)
     baseline_emd = loocv_mean_baseline(labels_df)
 
+    extractor = DINOv2FeatureExtractor(model_name=args.model_name, image_size=args.image_size)
+    train_img_feats = extractor.extract_manifest_features(train_manifest, batch_size=args.batch_size)
+    test_img_feats = extractor.extract_manifest_features(test_manifest, batch_size=args.batch_size)
+    x_dino_tr = aggregate_sample_features(train_img_feats, train_manifest["sample_id"].tolist(), train_ids)
+    x_dino_te = aggregate_sample_features(test_img_feats, test_manifest["sample_id"].tolist(), test_ids)
+
     if args.mode == "ridge":
-        extractor = DINOv2FeatureExtractor(model_name=args.model_name, image_size=args.image_size)
-        train_img_feats = extractor.extract_manifest_features(train_manifest, batch_size=args.batch_size)
-        test_img_feats = extractor.extract_manifest_features(test_manifest, batch_size=args.batch_size)
-
-        x_train = aggregate_sample_features(train_img_feats, train_manifest["sample_id"].tolist(), train_ids)
-        x_test = aggregate_sample_features(test_img_feats, test_manifest["sample_id"].tolist(), test_ids)
-
-        nested = evaluate_nested_loocv_ridge(x_train, y_train, alphas=DEFAULT_ALPHA_GRID)
-        best_alpha, _ = select_best_alpha_loocv(x_train, y_train, alphas=DEFAULT_ALPHA_GRID)
-
-        print(f"Train samples: {len(train_ids)} ({len(train_manifest)} images)")
-        print(f"Test samples:  {len(test_ids)} ({len(test_manifest)} images)")
+        nested = evaluate_nested_loocv_ridge(x_dino_tr, y_train, alphas=DEFAULT_ALPHA_GRID)
+        best_alpha, _ = select_best_alpha_loocv(x_dino_tr, y_train, alphas=DEFAULT_ALPHA_GRID)
         print(f"Mean baseline LOOCV EMD:        {baseline_emd:.6f}")
-        print(f"DINOv2+Ridge nested LOOCV EMD:  {nested.mean_emd:.6f}")
-        print(f"Improvement over baseline:      {baseline_emd - nested.mean_emd:+.6f}")
-
-        if nested.mean_emd < baseline_emd:
-            test_preds = fit_predict_ridge(x_train, y_train, x_test, alpha=best_alpha)
+        print(f"DINOv2+Ridge nested LOOCV EMD:  {nested.mean_emd:.6f} (alpha={best_alpha})")
+        if args.write_submission and nested.mean_emd < baseline_emd:
+            test_preds = fit_predict_ridge(x_dino_tr, y_train, x_dino_te, alpha=best_alpha)
             write_model_submission(test_ids, test_preds, template_path, args.output)
-            print(f"Saved validated submission ({len(test_preds)} rows) using alpha={best_alpha}: {args.output}")
-        else:
-            print("Model did not beat baseline; submission not written.")
+            print(f"Saved validated submission ({len(test_preds)} rows): {args.output}")
     else:
-        tr_tex_img = extract_physical_texture_features(train_manifest)
-        te_tex_img = extract_physical_texture_features(test_manifest)
-        x_tex_tr = aggregate_sample_features(tr_tex_img, train_manifest["sample_id"].tolist(), train_ids, agg="mean")
-        x_tex_te = aggregate_sample_features(te_tex_img, test_manifest["sample_id"].tolist(), test_ids, agg="mean")
+        tr_phys_img = extract_physical_texture_features(train_manifest)
+        te_phys_img = extract_physical_texture_features(test_manifest)
+        train_sids = train_manifest["sample_id"].to_numpy()
+        train_phones = train_manifest["phone"].to_numpy()
+        test_sids = test_manifest["sample_id"].to_numpy()
 
-        extractor = DINOv2FeatureExtractor(
-            model_name=args.model_name,
-            image_size=args.image_size,
-            gray_norm=True,
-        )
-        tr_dino_img = extractor.extract_manifest_features(train_manifest, batch_size=args.batch_size)
-        te_dino_img = extractor.extract_manifest_features(test_manifest, batch_size=args.batch_size)
-        x_dino_tr = aggregate_sample_features(tr_dino_img, train_manifest["sample_id"].tolist(), train_ids, agg="mean")
-        x_dino_te = aggregate_sample_features(te_dino_img, test_manifest["sample_id"].tolist(), test_ids, agg="mean")
+        x_phys_tr_all = np.vstack([np.median(tr_phys_img[train_sids == s], axis=0) for s in train_ids])
+        x_phys_te_all = np.vstack([np.median(te_phys_img[test_sids == s], axis=0) for s in test_ids])
+        moto_idx = train_phones == "Motorola Edge"
+        sams_idx = train_phones == "Samsung A52"
+        both_ids = [s for s in train_ids if (s in set(train_sids[moto_idx])) and (s in set(train_sids[sams_idx]))]
+        x_m = np.vstack([np.median(tr_phys_img[moto_idx & (train_sids == s)], axis=0) for s in both_ids])
+        x_s = np.vstack([np.median(tr_phys_img[sams_idx & (train_sids == s)], axis=0) for s in both_ids])
 
-        tex_alphas = (1.0, 3.0, 10.0, 30.0, 100.0)
-        nested_tex = evaluate_nested_loocv_ridge(x_tex_tr, y_train, alphas=tex_alphas)
-        nested_dino = evaluate_nested_loocv_pls(x_dino_tr, y_train, components=DEFAULT_PLS_COMPONENTS)
-        hybrid_oof = project_curves(args.w_tex * nested_tex.predictions + (1.0 - args.w_tex) * nested_dino.predictions)
-        hybrid_emd = mean_emd(y_train, hybrid_oof)
+        rob_mask = select_camera_robust_features(x_phys_tr_all, x_m, x_s, x_phys_te_all)
+        x_phys_tr, x_phys_te = x_phys_tr_all[:, rob_mask], x_phys_te_all[:, rob_mask]
+        print(f"Camera-robust physical features kept: {int(rob_mask.sum())} / {x_phys_tr_all.shape[1]}")
 
-        best_alpha, _ = select_best_alpha_loocv(x_tex_tr, y_train, alphas=tex_alphas)
-        best_k, _ = select_best_pls_components_loocv(x_dino_tr, y_train, components=DEFAULT_PLS_COMPONENTS)
-
-        print(f"Mean baseline LOOCV EMD:         {baseline_emd:.6f}")
-        print(f"PhysTex-L2 + Ridge Nested LOOCV: {nested_tex.mean_emd:.6f} (alpha={best_alpha})")
-        print(f"GrayNorm DINOv2 + PLS Nested:    {nested_dino.mean_emd:.6f} (n_components={best_k})")
-        print(f"Hybrid ({args.w_tex:.2f}/{1-args.w_tex:.2f}) Nested LOOCV:  {hybrid_emd:.6f}")
-
-        if hybrid_emd < baseline_emd:
-            test_preds = fit_predict_hybrid_ensemble(
-                x_tex_tr, x_dino_tr, y_train, x_tex_te, x_dino_te,
-                ridge_alpha=best_alpha, pls_components=best_k, w_tex=args.w_tex,
-            )
+        test_preds = fit_predict_logq_ensemble(x_phys_tr, x_dino_tr, y_train, x_phys_te, x_dino_te)
+        if args.write_submission:
             write_model_submission(test_ids, test_preds, template_path, args.output)
-            print(f"Saved validated hybrid submission ({len(test_preds)} rows): {args.output}")
+            print(f"Saved validated log-quantile ensemble submission ({len(test_preds)} rows): {args.output}")
         else:
-            print("Hybrid model did not beat baseline; submission not written.")
+            print("Dry run complete (pass --write-submission to overwrite submissions/submission.csv).")
 
 
 if __name__ == "__main__":

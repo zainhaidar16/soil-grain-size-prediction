@@ -48,3 +48,25 @@ def test_emd_range_and_wasserstein_equivalence():
         np.log10(DIAMETERS), np.log10(DIAMETERS), u_weights=pdf_true, v_weights=pdf_pred
     )
     assert emd_per_sample(y_true, y_pred)[0] == pytest.approx(expected, rel=1e-6)
+
+
+def test_log_quantile_round_trip_and_weibull_fit():
+    from src.metric import (
+        curve_to_log_quantiles,
+        fit_weibull_params,
+        log_quantiles_to_curve,
+        weibull_to_curve,
+    )
+
+    curve = np.array([5.2, 10.2, 23.7, 50.3, 75.8, 85.7, 91.0, 94.9, 98.6, 100.0, 100.0])
+    log_q = curve_to_log_quantiles(curve)
+    assert np.all(np.diff(log_q) >= -1e-9)
+    reconstructed = log_quantiles_to_curve(log_q)
+    validate_curves(reconstructed)
+    assert emd_per_sample(curve, reconstructed)[0] < 6.0
+
+    params = fit_weibull_params(curve)
+    w_curve = weibull_to_curve(params)
+    validate_curves(w_curve)
+    assert emd_per_sample(curve, w_curve)[0] < 16.0
+    assert emd_per_sample(curve, reconstructed)[0] < emd_per_sample(curve, w_curve)[0]

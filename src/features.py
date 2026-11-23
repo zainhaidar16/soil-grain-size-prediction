@@ -152,76 +152,179 @@ class DINOv2FeatureExtractor:
         return l2_normalize(np.concatenate(all_scale_features, axis=1))
 
 
+def _disk_footprint(radius_px: int) -> np.ndarray:
+    r = max(1, int(radius_px))
+    y, x = np.ogrid[-r : r + 1, -r : r + 1]
+    return (x * x + y * y) <= (r * r)
+
+
+def _lbp_summary(gray: np.ndarray, radius_px: int) -> list[float]:
+    """Rotation-invariant 8-neighbor Local Binary Pattern summary (6 features)."""
+    r = max(1, int(radius_px))
+    c = gray[r:-r, r:-r]
+    offsets = [(-r, -r), (-r, 0), (-r, r), (0, r), (r, r), (r, 0), (r, -r), (0, -r)]
+    counts = np.zeros_like(c, dtype=np.int32)
+    h, w = c.shape
+    for dy, dx in offsets:
+        nb = gray[r + dy : r + dy + h, r + dx : r + dx + w]
+        counts += (nb >= c).astype(np.int32)
+    hist = np.bincount(counts.ravel(), minlength=9).astype(np.float64)
+    hist /= hist.sum() + 1e-12
+    ent = float(-(hist * np.log(hist + 1e-12)).sum())
+    return [
+        float(hist[0] + hist[8]),
+        float(hist[1] + hist[7]),
+        float(hist[2] + hist[6]),
+        float(hist[3] + hist[5]),
+        float(hist[4]),
+        ent,
+    ]
+
+
+PHYSICAL_TEXTURE_FEATURE_NAMES: tuple[str, ...] = (
+    "log_e_0.4mm", "log_e_0.8mm", "log_e_1.6mm", "log_e_3.2mm", "log_e_6.4mm", "log_e_12.8mm",
+    "log_p90_0.4mm", "log_p90_0.8mm", "log_p90_1.6mm", "log_p90_3.2mm", "log_p90_6.4mm", "log_p90_12.8mm",
+    "fft_b0", "fft_b1", "fft_b2", "fft_b3", "fft_b4", "fft_b5",
+    "fft_b6", "fft_b7", "fft_b8", "fft_b9", "fft_b10", "fft_b11",
+    "morph_open_0.7mm", "morph_open_1.4mm", "morph_open_2.7mm", "morph_open_5.3mm", "morph_open_10.7mm",
+    "morph_close_0.7mm", "morph_close_1.4mm", "morph_close_2.7mm", "morph_close_5.3mm", "morph_close_10.7mm",
+    "grad_mean_0.5mm", "grad_mean_1.5mm", "grad_mean_4.5mm",
+    "grad_p90_0.5mm", "grad_p90_1.5mm", "grad_p90_4.5mm",
+    "edge_frac_0.5mm", "edge_frac_1.5mm", "edge_frac_4.5mm",
+    "lbp_r1_0", "lbp_r1_1", "lbp_r1_2", "lbp_r1_3", "lbp_r1_4", "lbp_r1_5",
+    "lbp_r3_0", "lbp_r3_1", "lbp_r3_2", "lbp_r3_3", "lbp_r3_4", "lbp_r3_5",
+    "blob_frac_3mm", "blob_frac_6mm", "blob_count_3mm", "blob_count_6mm",
+)
+
+
 def extract_physical_texture_features(
     manifest: pd.DataFrame,
     grid_px: int = 384,
-    crop_mm: float = 150.0,
+    crop_mm: float = 128.0,
 ) -> np.ndarray:
-    """Extract camera-invariant, physically scale-calibrated multi-scale texture features.
+    """Extract 59 camera-invariant, physically calibrated photogranulometry features.
 
-    Resamples a `crop_mm x crop_mm` physical center crop to a fixed `grid_px x grid_px`
-    luminance grid, applies zero-mean unit-variance photometric standardization (invariant
-    to camera brightness, contrast, and color temperature), and computes 51 features:
-    - 16 log-spaced radial 2D FFT power spectrum bands (cycles/mm)
-    - 26 multi-scale Difference-of-Gaussians (DoG) band energies & quantiles (0.4-25.6 mm)
-    - 9 multi-scale gradient magnitude statistics
+    Takes 3 spatial crops spanning the image at `crop_mm x crop_mm`, resamples to
+    a common physical grid (`grid_px / crop_mm` px/mm), removes slow illumination
+    gradients (flat-fielding, sigma=22 mm), applies robust median/IQR normalization,
+    and aggregates across the 3 crops via element-wise median.
     """
+    from scipy.ndimage import grey_closing, grey_opening, label
+
     if manifest.empty:
         raise ValueError("Manifest is empty")
 
-    target_ppm = grid_px / crop_mm
-    fy = np.fft.fftfreq(grid_px, d=1.0 / target_ppm)
-    fx = np.fft.rfftfreq(grid_px, d=1.0 / target_ppm)
+    ppm = grid_px / crop_mm
+    fy = np.fft.fftfreq(grid_px, d=1.0 / ppm)
+    fx = np.fft.rfftfreq(grid_px, d=1.0 / ppm)
     r2 = fy[:, None] ** 2 + fx[None, :] ** 2
     rr = np.sqrt(r2)
-    freq_edges = np.geomspace(0.02, target_ppm / 2.0, 17)
-    ring_masks = [(rr >= freq_edges[k]) & (rr < freq_edges[k + 1]) for k in range(16)]
     win = np.outer(np.hanning(grid_px), np.hanning(grid_px)).astype(np.float32)
 
-    sigmas_mm = [0.4, 0.8, 1.6, 3.2, 6.4, 12.8, 25.6]
-    g_kernels = [np.exp(-2.0 * (np.pi ** 2) * (s ** 2) * r2).astype(np.float32) for s in sigmas_mm]
+    ff_kernel = np.exp(-2.0 * (np.pi ** 2) * (22.0 ** 2) * r2).astype(np.float32)
+    log_sigmas_mm = (0.4, 0.8, 1.6, 3.2, 6.4, 12.8)
+    log_kernels = [
+        ((2.0 * np.pi * s) ** 2 * r2 * np.exp(-2.0 * (np.pi ** 2) * (s ** 2) * r2)).astype(np.float32)
+        for s in log_sigmas_mm
+    ]
+    grad_kernels = [np.exp(-2.0 * (np.pi ** 2) * (s ** 2) * r2).astype(np.float32) for s in (0.5, 1.5, 4.5)]
+
+    freq_edges = np.geomspace(0.03, ppm / 2.0, 13)
+    ring_masks = [(rr >= freq_edges[k]) & (rr < freq_edges[k + 1]) for k in range(12)]
+
+    morph_ppm = ppm / 2.0
+    morph_sems = [_disk_footprint(max(1, int(round(rad * morph_ppm)))) for rad in (0.7, 1.4, 2.7, 5.3, 10.7)]
 
     rows: list[np.ndarray] = []
     for _, r in manifest.iterrows():
         with Image.open(r["image_path"]) as im:
             oriented = ImageOps.exif_transpose(im).convert("L")
-            cropped = crop_physical_square(oriented, effective_ppm=r["effective_ppm"], crop_mm=crop_mm)
-            resized = cropped.resize((grid_px, grid_px), resample=Image.Resampling.BICUBIC)
-            gray = np.asarray(resized, dtype=np.float32)
+            w, h = oriented.size
+            cpx = max(1, min(w, h, int(round(crop_mm * float(r["effective_ppm"])))))
+            if w >= h:
+                cy = (h - cpx) // 2
+                coords = [(0, cy), ((w - cpx) // 2, cy), (w - cpx, cy)]
+            else:
+                cx = (w - cpx) // 2
+                coords = [(cx, 0), (cx, (h - cpx) // 2), (cx, h - cpx)]
 
-        gray = (gray - gray.mean()) / (gray.std() + 1e-6)
+            crop_vecs: list[np.ndarray] = []
+            for x0, y0 in coords:
+                sub = oriented.crop((x0, y0, x0 + cpx, y0 + cpx)).resize(
+                    (grid_px, grid_px), resample=Image.Resampling.BICUBIC
+                )
+                g = np.asarray(sub, dtype=np.float32)
+                bg = np.fft.irfft2(np.fft.rfft2(g) * ff_kernel, s=(grid_px, grid_px))
+                g = g - bg
+                med = float(np.median(g))
+                iqr = float(np.quantile(g[::2, ::2], 0.75) - np.quantile(g[::2, ::2], 0.25))
+                g = np.clip((g - med) / (iqr + 1e-6), -4.0, 4.0)
 
-        spec = np.abs(np.fft.rfft2(gray * win)) ** 2
-        band_power = np.array([spec[m].mean() for m in ring_masks], dtype=np.float64)
-        log_spec = np.log1p(band_power / (band_power.sum() + 1e-12) * 1e4)
+                fft_g = np.fft.rfft2(g)
+                log_e, log_p90, log_maps = [], [], []
+                for lk in log_kernels:
+                    lm = np.fft.irfft2(fft_g * lk, s=(grid_px, grid_px))
+                    log_maps.append(lm)
+                    log_e.append(float(np.log1p(np.mean(lm ** 2) * 10.0)))
+                    log_p90.append(float(np.quantile(np.abs(lm[::2, ::2]), 0.90)))
 
-        fft_g = np.fft.rfft2(gray)
-        blurs = [np.fft.irfft2(fft_g * gk, s=(grid_px, grid_px)) for gk in g_kernels]
-        dog_feats: list[float] = []
-        for k in range(len(blurs) - 1):
-            dog = blurs[k] - blurs[k + 1]
-            q50, q90, q98 = np.quantile(np.abs(dog[::2, ::2]), [0.50, 0.90, 0.98])
-            dog_feats.extend([
-                float(np.log1p(np.mean(dog ** 2) * 100.0)),
-                float(q50),
-                float(q90),
-                float(q98),
-            ])
-        fine = gray - blurs[0]
-        dog_feats.extend([
-            float(np.log1p(np.mean(fine ** 2) * 100.0)),
-            float(np.quantile(np.abs(fine[::2, ::2]), 0.90)),
-        ])
+                spec = np.abs(np.fft.rfft2(g * win)) ** 2
+                bp = np.array([spec[m].mean() for m in ring_masks], dtype=np.float64)
+                fft_f = np.log1p(bp / (bp.sum() + 1e-12) * 1e3).tolist()
 
-        grad_feats: list[float] = []
-        for b in (blurs[0], blurs[2], blurs[4]):
-            gy, gx = np.gradient(b)
-            gmag = np.hypot(gx, gy)
-            q75, q95 = np.quantile(gmag[::2, ::2], [0.75, 0.95])
-            grad_feats.extend([float(gmag.mean()), float(q75), float(q95)])
+                g_half = g[::2, ::2]
+                open_curve = [float(np.mean(g_half - grey_opening(g_half, footprint=s))) for s in morph_sems]
+                close_curve = [float(np.mean(grey_closing(g_half, footprint=s) - g_half)) for s in morph_sems]
+                o_sum, c_sum = sum(open_curve) + 1e-6, sum(close_curve) + 1e-6
+                open_rel = [v / o_sum for v in open_curve]
+                close_rel = [v / c_sum for v in close_curve]
 
-        rows.append(np.concatenate([log_spec, np.array(dog_feats), np.array(grad_feats)]).astype(np.float32))
+                g_mean, g_p90, e_frac = [], [], []
+                for gk in grad_kernels:
+                    sm = np.fft.irfft2(fft_g * gk, s=(grid_px, grid_px))
+                    gy, gx = np.gradient(sm)
+                    gm_sub = np.hypot(gx, gy)[::2, ::2]
+                    g_mean.append(float(gm_sub.mean()))
+                    g_p90.append(float(np.quantile(gm_sub, 0.90)))
+                    e_frac.append(float((gm_sub > 1.5 * (gm_sub.mean() + 1e-6)).mean()))
+
+                lbp1 = _lbp_summary(g_half, 1)
+                lbp3 = _lbp_summary(g_half, 3)
+
+                bm3, bm6 = np.abs(log_maps[3][::2, ::2]), np.abs(log_maps[4][::2, ::2])
+                m3 = bm3 > (1.5 * bm3.std() + 1e-6)
+                m6 = bm6 > (1.5 * bm6.std() + 1e-6)
+                _, n3 = label(m3)
+                _, n6 = label(m6)
+                blob_f = [float(m3.mean()), float(m6.mean()), float(np.log1p(n3)), float(np.log1p(n6))]
+
+                crop_vecs.append(np.array(
+                    log_e + log_p90 + fft_f + open_rel + close_rel + g_mean + g_p90 + e_frac + lbp1 + lbp3 + blob_f,
+                    dtype=np.float32,
+                ))
+            rows.append(np.median(crop_vecs, axis=0))
     return np.asarray(rows, dtype=np.float32)
+
+
+def select_camera_robust_features(
+    x_train: np.ndarray,
+    x_moto: np.ndarray,
+    x_sams: np.ndarray,
+    x_test: np.ndarray | None = None,
+    max_xcam_shift: float = 0.8,
+    max_test_shift: float = 1.0,
+) -> np.ndarray:
+    """Return boolean mask of features stable across cameras and unsupervised train/test shift."""
+    mu = x_train.mean(axis=0)
+    sd = x_train.std(axis=0) + 1e-8
+    xcam_shift = np.abs(x_moto.mean(axis=0) - x_sams.mean(axis=0)) / sd
+    mask = xcam_shift < max_xcam_shift
+    if x_test is not None:
+        test_shift = np.abs(x_test.mean(axis=0) - mu) / sd
+        mask = mask & (test_shift < max_test_shift)
+    if not mask.any():
+        raise ValueError("No features passed camera-robustness thresholds")
+    return mask
 
 
 def aggregate_sample_features(

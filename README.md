@@ -6,18 +6,37 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 ## Status
 
-**Best-known public submission:** Milestone 3 DINOv2-S RGB + Ridge, saved as `submissions/submission.csv` (public EMD `68.59422`, rank `602` at submission time). The Milestone 4 hybrid improved local CV but worsened the Kaggle public EMD to **above 76** (rank worse than 700). Its separate CSV was removed; its model remains available only as a research comparison. Better local validation is not proof of better unseen-camera generalization.
+- **Best-known Kaggle Public LB (`submissions/submission.csv`)**: **`68.59422`** (Frozen DINOv2-S RGB + Ridge, Nested LOOCV `45.161`). Preserved untouched pending approval to overwrite.
+- **Rejected previous candidate**: Physical Texture + GrayNorm DINOv2 PLS Hybrid scored `41.062` LOOCV but **`> 76` Public LB** (overpredicted fines on unseen iPhones due to un-filtered shifted features and linear PLS extrapolation).
+- **New recommended candidate (`--mode logq_ensemble`, Experiment `E-A`)**: Equal 50/50 ensemble in **log-grain-size quantile space (`LogQ11`: D5–D95)** combining **33 camera-robust flat-fielded photogranulometry features + winsorized RBF Kernel Ridge (`C3`)** and **DINOv2-S RGB + 1-component PLS Latent-Kernel-Median (`D3`)**. Achieves **`37.21`** Nested LOOCV, **`37.82`** Cross-Camera EMD (`+0.61` gap!), and **`42.12`** 6-Group Series Holdout.
 
-### Validation results (24 training samples, strictly leakage-free, lower is better)
+### Research findings informing this design
 
-| Model | Nested LOOCV EMD | Cross-Camera EMD (21 dual-cam) | Train-vs-Test AdvAUC | Public Kaggle EMD | Notes |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Mean-curve baseline (`src/baseline.py`) | `89.888867` | — | — | — | Image-independent baseline |
-| Milestone 3: DINOv2-S RGB + Ridge (`submissions/submission.csv`) | `45.160960` | `48.552` (`M→S 53.86`, `S→M 43.24`) | `0.975` | `68.59422` | High color/contrast domain shift |
-| PhysTex-L2 150mm + Ridge (`B1-L2`) | `43.252` | `47.872` (`M→S 53.61`, `S→M 42.14`) | **`0.640`** | — | Camera-invariant 51-dim FFT/DoG/grad |
-| GrayNorm DINOv2-S + PLS (`A2-PLS`, `k=2`) | `41.498` | `46.270` (`M→S 47.50`, `S→M 45.04`) | `0.935` | — | Discards camera-noise directions |
-| **Milestone 4: Hybrid 50/50 (`B1-L2` + `A2-PLS`)** (research experiment) | **`41.062`** | **`45.1` (`M→S ~47.3`, `S→M ~42.6`)** | `0.640` / `0.935` | `>76` (worse) | Local CV improved but test generalization worsened |
-| *Rejected*: PhysTex 3-crop + SVR-RBF (`C=100`) | `32.133` | `56.627` (`M→S 56.75`, `S→M 56.50`) | `0.560` | — | **Overfit** on Cross-Camera CV (`+24.5` gap) |
+1. **GRAI3 & GRAI4 (Soranzo, BOKU University, 2025–2026)** — [GRAI4 paper (PDF)](https://deepsoil.at/grai4.pdf), [Data in Brief (2025)](https://pmc.ncbi.nlm.nih.gov/articles/PMC12152572/), [deepsoil.at](https://www.deepsoil.at/):
+   - Competition images were captured in a standardized photo-box at ~210 mm stand-off; camera PPM normalization to a common physical grid (`~4.6 px/mm`) is essential for device-agnostic inference.
+   - **GRAI3** regressed a 2-parameter Weibull curve (`EfficientNetV2-S`), whereas **GRAI4** showed that unimodal Weibull introduces structural bias on well-graded/bimodal soils (confirmed locally: Weibull approximation floor = `7.63` EMD vs. `12.33` for Log-Normal) and moved to direct Wasserstein-1 (EMD) optimization over the 11 classes.
+2. **Log-quantile EMD duality & camera-robust photogranulometry** — [vitalclick/Predicting-Soil-Grain-Size](https://github.com/vitalclick/Predicting-Soil-Grain-Size) *(all rights reserved; methodology studied, no code copied)*:
+   - By 1D Wasserstein-1 duality, $\text{EMD} = \int_0^{100} |\log_{10} Q(p) - \log_{10} \hat{Q}(p)| \, dp$. Regressing log-diameters at fixed percentiles aligns directly with the competition metric, naturally handles coarse soils, and makes the **weighted median** in quantile space the L1-optimal point estimate.
+   - Unsupervised train-vs-test per-feature shift auditing catches camera-fragile descriptors (e.g., morphological closings shifted `4.5–9.8 σ` on iPhone test photos) before they corrupt test predictions.
+
+### Controlled Experiments A–F (24 training samples, strictly leakage-free, lower is better)
+
+| Experiment | Features → Target (Model) | Nested LOOCV [95% CI] | Cross-Camera (21) | 6-Group Series | Coarse (8) | Hard (4) | AdvAUC |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline | Mean training curve | `89.89` | — | — | — | — | — |
+| **A (Current LB `68.59`)** | DINOv2-S RGB → 11 CDF % (Ridge) | `45.22 [33.0, 58.9]` | `48.48 (53.5/43.5)` | `50.61` | `19.3` | `100.1` | `0.97` |
+| B1 | PhysV2-Rob (33d) → 11 CDF % (Ridge) | `44.31 [33.8, 55.7]` | `48.15 (51.0/45.3)` | `51.21` | `25.5` | `90.7` | `0.96` |
+| B2 | PhysV2-Rob (33d) → 11 CDF % (PLS) | `45.64 [34.6, 57.8]` | `51.13 (59.4/42.9)` | `51.49` | `30.7` | `90.5` | `0.96` |
+| C1 | PhysV2-Rob (33d) → LogQ11 (Ridge) | `41.10 [31.1, 52.4]` | `48.58 (50.7/46.4)` | `48.72` | `27.0` | `88.4` | `0.96` |
+| **C3** | PhysV2-Rob (33d) → LogQ11 (KRR-RBF) | `39.82 [28.9, 52.6]` | `41.63 (42.4/40.8)` | `47.36` | `19.9` | `95.8` | `0.96` |
+| C4 | PhysV2-Rob (33d) → LogQ11 (LKM) | `41.30 [29.5, 56.1]` | `43.41 (44.6/42.3)` | `42.66` | `17.1` | `94.2` | `0.96` |
+| C5 | PhysV2-Rob (33d) → LogQ5 (PLS) | `49.80 [38.7, 61.7]` | `51.02 (56.2/45.9)` | `51.49` | `35.3` | `99.0` | `0.96` |
+| D1 | DINOv2-S RGB → LogQ11 (Ridge) | `44.55 [33.7, 57.4]` | `45.72 (48.9/42.6)` | `49.00` | `22.4` | `95.1` | `0.97` |
+| D2 | DINOv2-S RGB → LogQ11 (PLS) | `40.11 [29.3, 53.2]` | `41.09 (42.0/40.1)` | `43.04` | `19.8` | `91.2` | `0.97` |
+| **D3** | DINOv2-S RGB → LogQ11 (LKM) | `37.79 [26.5, 52.3]` | `38.59 (38.7/38.5)` | `42.20` | `15.9` | `94.7` | `0.97` |
+| **E-A (Recommended)** | **50/50 LogQ11: C3 (PhysV2-KRR) + D3 (DINO-LKM)** | **`37.21 [26.5, 50.9]`** | **`37.82 (38.0/37.7)`** | **`42.12`** | **`17.1`** | **`94.8`** | — |
+| F1 | PhysV2-Rob (33d) → Weibull (PLS) | `43.02 [32.6, 55.2]` | `49.81 (53.1/46.5)` | `45.14` | `27.7` | `99.7` | `0.96` |
+| F2 | DINOv2-S RGB → Weibull (Ridge) | `43.45 [32.4, 56.6]` | `45.51 (47.5/43.5)` | `48.69` | `20.2` | `94.0` | `0.97` |
 
 ## Repository layout
 
@@ -25,24 +44,23 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 notebooks/
   01_dataset_exploration.ipynb     # CSV/image audits and visualizations
   02_baseline_and_validation.ipynb # Sample-level EMD mean-curve baseline
-  03_dinov2_ridge_model.ipynb      # Milestone 3: DINOv2 + LOOCV Ridge experiment
+  03_dinov2_ridge_model.ipynb      # Main DINOv2 experiment notebook
   README.md
 configs/
   experiment.json                  # Experiment defaults and validation policy
 src/
   __init__.py
-  metric.py                        # Log-diameter weighted EMD ([0, 500]) + curve validation
-  baseline.py                      # Leave-one-soil-sample-out mean baseline and submission
+  metric.py                        # Exact EMD ([0, 500]), log-quantile & Weibull transforms
+  baseline.py                      # Leave-one-soil-sample-out mean baseline
   dataset.py                       # Image-to-sample mapping and effective PPM metadata
-  features.py                      # EXIF/PPM physical crops, GrayNorm DINOv2, FFT/DoG texture
-  model.py                         # Leakage-free LOOCV Ridge, PLS, hybrid ensemble & CLI
+  features.py                      # EXIF/PPM crops, frozen DINOv2, 59d photogranulometry, shift filter
+  model.py                         # LOOCV Ridge, PLS, winsorized KRR-RBF, LKM, logq_ensemble & CLI
 submissions/
-  mean_baseline.csv                # Mean-curve baseline predictions (10 test samples)
-  submission.csv                   # Milestone 3 DINOv2-S RGB + Ridge (Public LB: 68.59422)
+  submission.csv                   # Single active submission (currently best-known LB 68.59422)
 tests/
-  test_metric.py                   # EMD normalization, Wasserstein-1 equivalence, schema tests
-  test_dataset.py                  # Filename/sample mapping, PPM, cropping, physical texture tests
-  test_model.py                    # LOOCV leakage, PLS, hybrid ensemble, submission tests
+  test_metric.py                   # EMD, Wasserstein-1, log-quantile round-trip, Weibull tests
+  test_dataset.py                  # Mapping, PPM, cropping, 59d physical texture, shift filter tests
+  test_model.py                    # LOOCV leakage, PLS, KRR, LKM, log-quantile ensemble tests
 requirements.txt
 .gitignore                         # Keeps raw competition data, model binaries, and secrets out of Git
 ```
@@ -53,38 +71,33 @@ The [Kaggle competition dataset](https://www.kaggle.com/competitions/soil-grain-
 
 > **Why raw competition data is not committed:** This repository is public, and Kaggle competition rules restrict public redistribution of competition data (no permissive redistribution license is included with the dataset). Pretrained DINOv2 weights (`vit_small_patch14_dinov2.lvd142m`) are downloaded automatically at runtime by `timm`.
 
-## Quick start and training process
-
-Python 3.10+ recommended.
+## Quick start and reproduction
 
 ```bash
 git clone https://github.com/zainhaidar16/soil-grain-size-prediction.git
 cd soil-grain-size-prediction
 python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
 pip install -r requirements.txt
 python -m pytest -q
 ```
 
-Join the [Kaggle competition](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview) and accept its rules first. Both the CLI and notebooks resolve data via `SOIL_DATA_DIR`, local `data/`, the local `kagglehub` cache, or `kagglehub.competition_download("soil-grain-size-from-photos")`. Outside Kaggle, set `KAGGLE_API_TOKEN` in your local environment (never commit tokens or `.env` files).
-
-Run any of the three reproducible pipelines:
+Set `KAGGLE_API_TOKEN` in your local environment (never commit tokens or `.env` files) or point `SOIL_DATA_DIR` to the extracted dataset.
 
 ```bash
-# Mean-curve baseline
-python -m src.baseline --labels data/Training_labels_updated.csv --submission-template data/sample_submission.csv --output submissions/mean_baseline.csv
+# Dry-run the current best-known LB model (DINOv2-S RGB + Ridge)
+python -m src.model --mode ridge
 
-# Milestone 3 (preserved): Frozen DINOv2-S RGB + nested LOOCV Ridge
-python -m src.model --mode ridge --output submissions/submission.csv
+# Dry-run the recommended Log-Quantile Ensemble (E-A: PhysV2-Rob KRR + DINOv2-S LKM)
+python -m src.model --mode logq_ensemble
 
-# Milestone 4 (recommended): Hybrid PhysTex-L2 Ridge + GrayNorm DINOv2-S PLS
+# Only overwrite the single active submission file once approved:
+python -m src.model --mode logq_ensemble --write-submission --output submissions/submission.csv
 ```
-
-The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.02, 0.063, 0.2, 0.63, 2, 6.3, 20, 63, 200` (verified against `Training_labels_updated.csv` and `sample_submission.csv`).
 
 ## Submitting to Kaggle
 
+Only **one** submission file is maintained in the repository: `submissions/submission.csv` (currently preserving our best-known `68.59422` public LB submission until replacement is approved). Git history tracks prior versions.
 
 ## Notebook workflow
 
@@ -108,7 +121,3 @@ The CSV schema expects `sample_id` and the 11 target columns `0.002, 0.0063, 0.0
 
 Never check in raw contest images, test labels, Kaggle tokens, downloaded model binaries, or unlicensed data. Follow [competition rules](https://www.kaggle.com/competitions/soil-grain-size-from-photos/rules) for external data, pretrained weights, and sharing.
 
-
-## Submission file policy
-
-Use **only** `submissions/submission.csv` as the final competition submission artifact. Do not create numbered, milestone-specific, or alternate submission CSV files. Experiment outputs should stay in memory or in ignored temporary scratch storage. When an experiment has been validated and explicitly selected for submission, overwrite `submissions/submission.csv` with the exact verified official-template row/column order; run physical-curve and missing-value checks before writing. Preserve old reproducibility through Git commits instead of duplicate CSV files. The best-known public submission currently remains Milestone 3. Never commit Kaggle tokens or credentials.

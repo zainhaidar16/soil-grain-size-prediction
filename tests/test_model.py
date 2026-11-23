@@ -91,3 +91,13 @@ def test_nested_pls_and_hybrid_ensemble():
     )
     assert hyb_preds.shape == (2, 11)
     validate_curves(hyb_preds)
+
+
+def test_logq_ensemble_produces_valid_curves():
+    from src.model import fit_predict_logq_ensemble
+
+    x_phys, y = _synthetic_dataset(n_samples=12, n_features=6, seed=19)
+    x_dino, _ = _synthetic_dataset(n_samples=12, n_features=12, seed=19)
+    preds = fit_predict_logq_ensemble(x_phys[:10], x_dino[:10], y[:10], x_phys[10:], x_dino[10:])
+    assert preds.shape == (2, 11)
+    validate_curves(preds)
