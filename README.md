@@ -6,9 +6,9 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 ## Status
 
-- **Best-known Kaggle Public LB (`submissions/submission.csv`)**: **`68.59422`** (Frozen DINOv2-S RGB + Ridge, Nested LOOCV `45.161`). Preserved untouched pending approval to overwrite.
-- **Rejected previous candidate**: Physical Texture + GrayNorm DINOv2 PLS Hybrid scored `41.062` LOOCV but **`> 76` Public LB** (overpredicted fines on unseen iPhones due to un-filtered shifted features and linear PLS extrapolation).
-- **New recommended candidate (`--mode logq_ensemble`, Experiment `E-A`)**: Equal 50/50 ensemble in **log-grain-size quantile space (`LogQ11`: D5–D95)** combining **33 camera-robust flat-fielded photogranulometry features + winsorized RBF Kernel Ridge (`C3`)** and **DINOv2-S RGB + 1-component PLS Latent-Kernel-Median (`D3`)**. Achieves **`37.21`** Nested LOOCV, **`37.82`** Cross-Camera EMD (`+0.61` gap!), and **`42.12`** 6-Group Series Holdout.
+- **Previous best-known Kaggle Public LB**: **`68.59422`** (Frozen DINOv2-S RGB + Ridge, Nested LOOCV `45.161`; preserved in git history prior to replacement).
+- **Rejected intermediate candidate**: Physical Texture + GrayNorm DINOv2 PLS Hybrid scored `41.062` LOOCV but **`> 76` Public LB** (overpredicted fines on unseen iPhones due to un-filtered shifted features and linear PLS extrapolation).
+- **Active submission (`submissions/submission.csv`, Experiment `E-A`, `--mode logq_ensemble`)**: Equal 50/50 ensemble in **log-grain-size quantile space (`LogQ11`: D5–D95)** combining **33 camera-robust flat-fielded photogranulometry features + winsorized RBF Kernel Ridge (`C3`)** and **DINOv2-S RGB + 1-component PLS Latent-Kernel-Median (`D3`)**. Leakage audit passed (strict in-fold LOOCV **`37.24`**, zero-test-access in-fold LOOCV **`38.13`**, label-perturbation diff **`0.0`**, Cross-Camera **`37.82`**, 6-Group Series **`42.12`**, paired bootstrap win rate **`100.0%`** over 2,000 resamples vs. Baseline `A`, 95% CI `[-13.39, -2.97]`).
 
 ### Research findings informing this design
 
