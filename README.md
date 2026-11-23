@@ -76,6 +76,12 @@ Applying the identical `F(2 mm) >= 90%` sand-routing rule inside 15-site Locatio
 | Soft-Routed (`Opt1 → b5+DINO-GN`, `s=5`) + **0%** | `40.54` | `29.70` | `49.62` | `32.87` | `47.25` | `30.9%` *(realistic)* | `18.31` | — |
 | Soft-Routed (`Opt1 → b5+DINO-GN`, `s=5`) + **50%** | `43.74` | `30.11` | `55.52` | `33.78` | `50.90` | `44.2%` *(within train max `45.5%`)* | `24.77` | — |
 
+### Large-Stone Physics Validation, Calibration Sensitivity & Feature-Shift Audit
+
+- **Validated on 24 training soils (`>= 6.3 mm` & `>= 20 mm`)**: `9/24` training soils have `>= 10%` mass retained above `20 mm` (max `23.5%` on `H374`), and `12/24` have `>= 20%` above `6.3 mm` (max `49.3%`). Boundary-contrast-gated CPU stone detection ([`estimate_coarse_stone_area`](file:///home/antigravity/zainhaidar16/soil-grain-size-prediction/src/features.py)) correlates with 3D lab mass at `r = +0.644` (`>= 6.3 mm`) and `r = +0.598` (`>= 20 mm`, MAE `4.72%`, implied stereology `k = 1.38`), while eliminating false positives on uniform sands (`Kleinkummerfeld = 0.000`, `Airbus <= 0.015`).
+- **Unverifiable test assumptions**: True cobbles (`>= 63 mm`) are nearly absent in train (max `7.4%`), 2D surface area depends strongly on segmentation method (`Muenster` `A20 = 0.215` watershed vs `0.655` SAM), and stereology factor `k` (`±0.2`) swings `Muenster` by `±19.7` EMD and `Lidl WHV` by `±10.5` EMD. Camera calibration error (`effective_ppm × 0.8–1.2`) shifts `Muenster` by only `±3%` (`0.210–0.224`) but `Lidl WHV` by `±12%` (`0.118–0.149`).
+- **Sand/gravel feature-shift audit (`tl` 29d)**: `Lab` color (`tl_b_mean` `1.52 σ`, `tl_L_mean` `2.05 σ` train→test) and fine DoG (`0.25–0.5 mm`, `1.17–1.36 σ`) shift most across cameras. Dropping `Lab` improves Cross-Phone CV (`41.81 → 40.46` with 4-way blend) but worsens 15-site OOF (`37.83 → 39.72`), so Option 1 (`37.83` OOF / `41.81` Cross-Phone) remains the preserved active submission.
+
 ## Repository layout
 
 ```text

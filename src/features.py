@@ -581,11 +581,13 @@ def estimate_coarse_stone_area(
     gy = cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3)
     grad = np.hypot(gx, gy)
 
-    valleys = (norm < 0.82) | (grad > np.percentile(grad, 82))
+    p80 = float(np.percentile(grad, 80))
+    valleys = (norm < 0.84) | (grad > max(p80, 0.035))
     free = (~valleys).astype(np.uint8)
-    free = cv2.morphologyEx(free, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    free = cv2.morphologyEx(free, cv2.MORPH_OPEN, ker)
     dist = ndi.distance_transform_edt(free)
-    seeds = (dist >= 11.0).astype(np.uint8)
+    seeds = (dist >= 10.0 * (ppm_stone / 2.0)).astype(np.uint8)
     n_lbl, markers = cv2.connectedComponents(seeds)
     if n_lbl <= 1:
         return 0.0, 0.0
@@ -598,12 +600,20 @@ def estimate_coarse_stone_area(
     for lbl in range(1, n_lbl):
         mask = grown == lbl
         px = int(mask.sum())
-        if px == 0:
+        if px < 16:
             continue
         eq_diam_mm = 2.0 * float(np.sqrt(px / np.pi)) / ppm_stone
         inscribed_mm = 2.0 * float(dist[mask].max()) / ppm_stone
         if inscribed_mm < 0.45 * eq_diam_mm:
             continue
+        # Reject uniform sand/clay patches lacking dark shadow / gradient perimeter rings
+        dil = cv2.dilate(mask.astype(np.uint8), ker) > 0
+        ring = dil & (~mask)
+        if ring.any():
+            ring_grad = float(grad[ring].mean())
+            ring_dark = float(norm[mask].mean() - norm[ring].mean())
+            if ring_grad < 0.045 and ring_dark < 0.05:
+                continue
         if eq_diam_mm >= 20.0:
             area_20 += px
         if eq_diam_mm >= 63.0:
