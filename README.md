@@ -63,6 +63,19 @@ Using the true **15-site location grouping** (Soranzo et al., 2025 — preventin
 3. **Calibrated soft sand/gravel routing** (`sigmoid` around `F(2 mm) = 90%`) outperforms hard routing on both 15-site OOF (`-1.48` to `-2.22` EMD) and Cross-Phone CV (`-1.39` to `-4.55` EMD).
 4. **Clean-sand fines correction (`2.78%` at `0.063 mm`)** is an assumption-dependent prior: at `4.5 px/mm`, a `0.063 mm` silt grain is `0.28 px` wide (below optical resolution), and 10 of 11 sand-like training soils are silty (`35–90%` passing `0.063 mm`). Applying it blindly hurts local 15-site OOF by `+7.14` EMD (helping only `H616` by `-13.89` while hurting all 10 silty sands by `+7` to `+23` EMD). Data-driven `F(0.063 mm)` regression also predicts `~40%` for `H616` due to this label imbalance.
 
+### Controlled Fines-Reduction Experiments (Option 1 Base, Active Public LB `43.66208`)
+
+Applying the identical `F(2 mm) >= 90%` sand-routing rule inside 15-site Location CV, Cross-Phone CV, and on the 7 sand-like test soils (preserving Option 1's large-stone correction unchanged):
+
+| Candidate | 15-Site OOF | Median | Sand (11) | Gravel (13) | Cross-Phone | Test Sand `max(0.063→0.2)` | Shift vs. Sub | OOF Improved / Worsened |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Option 1: **0% (No correction)** *(Public LB `43.66208`)* | **`37.83`** | **`28.16`** | **`39.53`** | `36.39` | `41.81` | `33.2%` *(realistic)* | `0.00` | Baseline |
+| Option 1 + **25% fines reduction** | `38.22` | `28.25` | `41.87` | `35.14` | **`41.71`** | `42.3%` *(within train max `45.5%`)* | `5.21` | `5 / 8` |
+| Option 1 + **50% fines reduction** | `40.38` | `28.25` | `47.00` | **`34.78`** | `43.83` | `51.4%` *(exceeds train max)* | `10.41` | `5 / 8` |
+| Option 1 + **Clean-sand `2.78%`** | `46.77` | `34.25` | `58.35` | `36.97` | `52.20` | `66.9%` *(unrealistic cliff)* | `19.22` | `2 / 11` |
+| Soft-Routed (`Opt1 → b5+DINO-GN`, `s=5`) + **0%** | `40.54` | `29.70` | `49.62` | `32.87` | `47.25` | `30.9%` *(realistic)* | `18.31` | — |
+| Soft-Routed (`Opt1 → b5+DINO-GN`, `s=5`) + **50%** | `43.74` | `30.11` | `55.52` | `33.78` | `50.90` | `44.2%` *(within train max `45.5%`)* | `24.77` | — |
+
 ## Repository layout
 
 ```text

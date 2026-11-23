@@ -146,6 +146,15 @@ def test_routed_specialists_cobble_fines_and_grouped_cv():
     validate_curves(cleaned.to_numpy(dtype=float))
     assert cleaned.loc["S10", "0.063"] <= 2.78 + 1e-6
 
+    from src.model import apply_fines_reduction
+
+    red25 = apply_fines_reduction(routed, mask, reduction_frac=0.25)
+    validate_curves(red25.to_numpy(dtype=float))
+    assert red25.loc["S10", "0.063"] <= routed.loc["S10", "0.063"] + 1e-6
+    assert np.allclose(red25.loc["S11"].to_numpy(dtype=float), routed.loc["S11"].to_numpy(dtype=float))
+    with pytest.raises(ValueError, match="reduction_frac"):
+        apply_fines_reduction(routed, mask, reduction_frac=1.5)
+
     manifest = pd.DataFrame({"sample_id": sid_ph, "location": loc_ph})
     labels_df = pd.DataFrame(y, index=sids, columns=TARGET_COLUMNS)
     mean_e, per_s, oof = evaluate_grouped_location_cv(

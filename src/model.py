@@ -556,6 +556,28 @@ def apply_clean_sand_fines_correction(
     return out
 
 
+def apply_fines_reduction(
+    preds: pd.DataFrame,
+    is_sand_mask: pd.Series,
+    reduction_frac: float = 0.25,
+) -> pd.DataFrame:
+    """Scale <=0.063 mm sieves of sand-like soils down by `reduction_frac` in [0, 1] with isotonic repair."""
+    from src.metric import repair_isotonic
+
+    if not (0.0 <= float(reduction_frac) <= 1.0):
+        raise ValueError("reduction_frac must be in [0, 1]")
+    if reduction_frac == 0.0:
+        return preds.copy()
+    scale = 1.0 - float(reduction_frac)
+    out = preds.copy()
+    for sid in out.index:
+        if bool(is_sand_mask.loc[sid]):
+            row = out.loc[sid, TARGET_COLUMNS].to_numpy(dtype=float).copy()
+            row[:4] *= scale
+            out.loc[sid, TARGET_COLUMNS] = repair_isotonic(row)
+    return out
+
+
 def evaluate_grouped_location_cv(
     fit_predict_fn,
     train_manifest: pd.DataFrame,
