@@ -155,3 +155,11 @@ def test_sample_locations_and_dog_features(tmp_path):
     a63, a20 = estimate_coarse_stone_area(img_path, effective_ppm=4.5)
     assert 0.0 <= a63 <= a20 <= 1.0
 
+    from src.features import extract_native_common_dog_features
+
+    nat7 = extract_native_common_dog_features(img_path, effective_ppm=4.5)
+    assert nat7.shape == (7,)
+    assert np.isfinite(nat7).all()
+    assert nat7[:5].sum() == pytest.approx(1.0, abs=1e-4)
+
+

@@ -620,3 +620,41 @@ def estimate_coarse_stone_area(
             area_63 += px
     return float(area_63 / total_px), float(area_20 / total_px)
 
+
+NATIVE_COMMON_SCALES_MM: tuple[float, ...] = (0.63, 1.0, 1.6, 2.5, 4.0)
+
+
+def extract_native_common_dog_features(
+    image_path: str | Path,
+    effective_ppm: float,
+    tile_mm: float = 50.0,
+) -> np.ndarray:
+    """Extract 7 optically resolved common-band (0.63-4.0 mm) native DoG features.
+
+    Returns 5 normalized DoG band fractions, log2-diameter centroid, and fine-band ratio
+    (0.63+1.0 mm), all physically resolved on both Android (~4.55 px/mm) and iPhone (~19.5 px/mm).
+    """
+    import cv2
+
+    with Image.open(image_path) as im:
+        arr = np.asarray(ImageOps.exif_transpose(im).convert("RGB"))
+    h, w = arr.shape[:2]
+    ppm = float(effective_ppm)
+    side = min(h, w, max(16, int(round(tile_mm * ppm))))
+    y0, x0 = (h - side) // 2, (w - side) // 2
+    gray = cv2.cvtColor(arr[y0 : y0 + side, x0 : x0 + side], cv2.COLOR_RGB2GRAY).astype(np.float32)
+
+    norm = gray / (_fast_gaussian_blur(gray, max(0.5, 10.0 * ppm / 2.0)) + 1e-3)
+    prev = _fast_gaussian_blur(norm, max(0.5, 0.35 * ppm / 2.8))
+    vals: list[float] = []
+    for d in NATIVE_COMMON_SCALES_MM:
+        cur = _fast_gaussian_blur(norm, max(0.5, float(d) * ppm / 2.8))
+        vals.append(float(np.sqrt(np.mean((prev - cur) ** 2))))
+        prev = cur
+    w_arr = np.asarray(vals, dtype=float)
+    fracs = w_arr / (w_arr.sum() + 1e-9)
+    centroid_log2 = float(np.sum(fracs * np.log2(NATIVE_COMMON_SCALES_MM)))
+    fine_ratio = float(fracs[0] + fracs[1])
+    return np.array([*fracs.tolist(), centroid_log2, fine_ratio], dtype=np.float32)
+
+

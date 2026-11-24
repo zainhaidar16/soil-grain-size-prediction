@@ -578,6 +578,78 @@ def apply_fines_reduction(
     return out
 
 
+def fit_predict_uncertainty_weibull_ridge(
+    x_hand_train: np.ndarray,
+    x_emb_train: np.ndarray,
+    weibull_train_photo: np.ndarray,
+    train_sample_ids: Sequence[str],
+    x_hand_eval: np.ndarray,
+    x_emb_eval: np.ndarray,
+    eval_sample_ids: Sequence[str],
+    alpha: float = 20.0,
+    n_pca: int = 8,
+    emb_weight: float = 0.10,
+    soil_weighted: bool = True,
+    seed: int = 42,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    """Fit hybrid Weibull Ridge returning (mean_curves, photo_std_02_063, bayesian_leverage)."""
+    from sklearn.decomposition import PCA
+    from src.metric import repair_isotonic, weibull_lnb_c_to_curve
+
+    sh = StandardScaler().fit(x_hand_train)
+    se = StandardScaler().fit(x_emb_train)
+    k = max(1, min(int(n_pca), len(x_emb_train) - 1, x_emb_train.shape[1]))
+    pca = PCA(n_components=k, svd_solver="randomized", random_state=seed)
+    c_tr = pca.fit_transform(se.transform(x_emb_train))
+    c_ev = pca.transform(se.transform(x_emb_eval))
+    sp = StandardScaler().fit(c_tr)
+    xtr = np.hstack([sh.transform(x_hand_train), float(emb_weight) * sp.transform(c_tr)])
+    xev = np.hstack([sh.transform(x_hand_eval), float(emb_weight) * sp.transform(c_ev)])
+
+    sw = _photo_soil_weights(train_sample_ids) if soil_weighted else None
+    reg = Ridge(alpha=float(alpha)).fit(xtr, weibull_train_photo, sample_weight=sw)
+    w_ev = reg.predict(xev)
+    curves_ph = np.vstack([weibull_lnb_c_to_curve(float(a), float(b)) for a, b in w_ev])
+
+    if sw is not None:
+        gram = xtr.T @ (sw[:, None] * xtr) + float(alpha) * np.eye(xtr.shape[1])
+    else:
+        gram = xtr.T @ xtr + float(alpha) * np.eye(xtr.shape[1])
+    lev_ph = np.einsum("ij,jk,ik->i", xev, np.linalg.inv(gram), xev)
+
+    df = pd.DataFrame(curves_ph, columns=TARGET_COLUMNS)
+    df["sample_id"] = list(eval_sample_ids)
+    mean_df = df.groupby("sample_id", sort=False)[TARGET_COLUMNS].mean()
+    mean_df = pd.DataFrame(repair_isotonic(mean_df.to_numpy(dtype=float)), index=mean_df.index, columns=TARGET_COLUMNS)
+    std_02_063 = df.groupby("sample_id", sort=False)[["0.2", "0.63"]].std().fillna(0.0).mean(axis=1).loc[mean_df.index]
+    lev_s = pd.Series(lev_ph, index=list(eval_sample_ids)).groupby(level=0, sort=False).mean().loc[mean_df.index]
+    return mean_df, std_02_063, lev_s
+
+
+def uncertainty_aware_soft_route(
+    gravel_preds: pd.DataFrame,
+    sand_preds: pd.DataFrame,
+    leverage: pd.Series,
+    photo_std: pd.Series,
+    threshold_2mm: float = 90.0,
+    scale: float = 5.0,
+    lev_ref: float = 0.5,
+    std_ref: float = 10.0,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Continuous uncertainty-aware routing shrinking sand weight when leverage or photo dispersion is high."""
+    from src.metric import repair_isotonic
+
+    idx = gravel_preds.index
+    f2 = gravel_preds.loc[idx, "2"].to_numpy(dtype=float)
+    w_base = 1.0 / (1.0 + np.exp(-np.clip((f2 - float(threshold_2mm)) / float(scale), -20.0, 20.0)))
+    lv = np.maximum(leverage.loc[idx].to_numpy(dtype=float), 0.0)
+    sd = np.maximum(photo_std.loc[idx].to_numpy(dtype=float), 0.0)
+    conf = 1.0 / (1.0 + lv / float(lev_ref) + (sd / float(std_ref)) ** 2)
+    w = w_base * conf
+    blended = (1.0 - w[:, None]) * gravel_preds.loc[idx, TARGET_COLUMNS].to_numpy(dtype=float) + w[:, None] * sand_preds.loc[idx, TARGET_COLUMNS].to_numpy(dtype=float)
+    return pd.DataFrame(repair_isotonic(blended), index=idx, columns=TARGET_COLUMNS), pd.Series(w, index=idx)
+
+
 def evaluate_grouped_location_cv(
     fit_predict_fn,
     train_manifest: pd.DataFrame,

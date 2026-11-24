@@ -168,3 +168,15 @@ def test_routed_specialists_cobble_fines_and_grouped_cv():
     assert oof.shape == (12, 11)
     assert len(per_s) == 12
 
+    from src.model import fit_predict_uncertainty_weibull_ridge, uncertainty_aware_soft_route
+
+    ps_u, sd_u, lv_u = fit_predict_uncertainty_weibull_ridge(
+        x_ph[:20, :5], x_ph[:20], w_ph[:20], sid_ph[:20], x_ph[20:, :5], x_ph[20:], sid_ph[20:], n_pca=4
+    )
+    validate_curves(ps_u.to_numpy(dtype=float))
+    assert (sd_u >= 0.0).all() and (lv_u >= 0.0).all()
+    u_routed, u_weights = uncertainty_aware_soft_route(pg, ps_u, lv_u, sd_u)
+    validate_curves(u_routed.to_numpy(dtype=float))
+    assert ((u_weights >= 0.0) & (u_weights <= 1.0)).all()
+
+
