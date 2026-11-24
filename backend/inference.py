@@ -1,12 +1,20 @@
 """Production inference engine and geotechnical post-processing for SoilVision AI."""
 from __future__ import annotations
 
+import gc
 import io
 import json
+import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# On Vercel Serverless / Fluid Functions, only /tmp is writable for HuggingFace/timm weight caching.
+if os.environ.get("VERCEL"):
+    os.environ.setdefault("HF_HOME", "/tmp/soilvision_hf_cache")
+    os.environ.setdefault("TORCH_HOME", "/tmp/soilvision_torch_cache")
+    os.environ.setdefault("XDG_CACHE_HOME", "/tmp/soilvision_cache")
 
 import joblib
 import numpy as np
@@ -299,6 +307,9 @@ class SoilVisionEngine:
 
     def _ensure_backbones(self) -> None:
         if self._ext_rgb is None:
+            import torch
+
+            torch.set_num_threads(min(2, os.cpu_count() or 1))
             self._ext_rgb = DINOv2FeatureExtractor(
                 model_name=str(self.bundle["dinov2_model_name"]),
                 gray_norm=False,
@@ -477,6 +488,9 @@ class SoilVisionEngine:
                 else:
                     stone_a63_list.append(0.0)
                     stone_a20_list.append(0.0)
+
+                del img_tl
+                gc.collect()
 
         if len(image_payloads) == 1:
             warnings.append(

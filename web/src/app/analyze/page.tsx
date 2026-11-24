@@ -25,6 +25,8 @@ import { cn } from "@/lib/utils";
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 const MAX_FILES = 12;
 const MAX_FILE_BYTES = 15 * 1024 * 1024;
+const VERCEL_SAFE_TOTAL_BYTES = 3.5 * 1024 * 1024;
+const TARGET_MAX_EDGE_PX = 1800;
 
 interface UploadedImage {
   file: File;
@@ -61,6 +63,38 @@ function readImageDimensions(file: File): Promise<{ width: number; height: numbe
     };
     reader.readAsDataURL(file);
   });
+}
+
+async function resizeImageByRatio(
+  item: UploadedImage,
+  ratio: number,
+  quality: number
+): Promise<File> {
+  const img = new Image();
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error(`Failed to load ${item.file.name} for optimization`));
+    img.src = item.previewUrl;
+  });
+
+  const targetW = Math.max(224, Math.round(item.width * ratio));
+  const targetH = Math.max(224, Math.round(item.height * ratio));
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = targetH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return item.file;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, 0, 0, targetW, targetH);
+
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob((b) => resolve(b), "image/jpeg", quality)
+  );
+  if (!blob) return item.file;
+
+  const baseName = item.file.name.replace(/\.[^.]+$/, "");
+  return new File([blob], `${baseName}.jpg`, { type: "image/jpeg" });
 }
 
 export default function AnalyzePage() {
@@ -166,9 +200,27 @@ export default function AnalyzePage() {
     setProgressIdx(0);
     setSubmitting(true);
     try {
+      const totalBytes = images.reduce((acc, item) => acc + item.file.size, 0);
+      const maxLongEdge = Math.max(...images.map((item) => Math.max(item.width, item.height)));
+      let uploadFiles: File[] = images.map((item) => item.file);
+      let scaleRatio = 1.0;
+
+      if (totalBytes > VERCEL_SAFE_TOTAL_BYTES) {
+        scaleRatio = maxLongEdge > TARGET_MAX_EDGE_PX ? TARGET_MAX_EDGE_PX / maxLongEdge : 1.0;
+        uploadFiles = await Promise.all(
+          images.map((item) => resizeImageByRatio(item, scaleRatio, 0.88))
+        );
+        const optTotal = uploadFiles.reduce((acc, f) => acc + f.size, 0);
+        if (optTotal > VERCEL_SAFE_TOTAL_BYTES) {
+          uploadFiles = await Promise.all(
+            images.map((item) => resizeImageByRatio(item, scaleRatio, 0.76))
+          );
+        }
+      }
+
       const body = new FormData();
-      for (const img of images) {
-        body.append("files", img.file, img.file.name);
+      for (const file of uploadFiles) {
+        body.append("files", file, file.name);
       }
       if (values.sampleId) body.append("sample_id", values.sampleId);
       body.append("calibration_mode", values.calibrationMode);
@@ -177,7 +229,8 @@ export default function AnalyzePage() {
       } else if (values.calibrationMode === "fov_mm" && values.fovWidthMm) {
         body.append("fov_width_mm", values.fovWidthMm);
       } else if (values.calibrationMode === "ppm" && values.effectivePpm) {
-        body.append("effective_ppm", values.effectivePpm);
+        const adjustedPpm = Number(values.effectivePpm) * scaleRatio;
+        body.append("effective_ppm", adjustedPpm.toFixed(4));
       }
       body.append("apply_stone_correction", String(values.applyStoneCorrection));
 

@@ -4,13 +4,24 @@ Production-ready computer-vision web application and Kaggle research repository 
 
 **Goal:** Predict cumulative grain-size mass percentages at 11 diameters (`0.002–200 mm`) from calibrated soil sample photographs, with interactive logarithmic grading curves, ISO 14688-1 composition estimates, log-interpolated engineering parameters (`D10–D60`, `Cu`, `Cc`), indicative classification, and downloadable CSV/PDF reports.
 
-## SoilVision AI Web Application
+## SoilVision AI Web Application (Vercel-Only Architecture)
 
 ### Architecture
 
-- **Frontend (`web/`):** Next.js App Router (TypeScript strict, Tailwind CSS, Recharts, Lucide icons, React Hook Form + Zod, jsPDF) designed for **Vercel** deployment. Communicates exclusively with Next.js server-side proxy routes (`/api/health`, `/api/model-info`, `/api/predict`) so backend URLs and API keys are never exposed to the browser.
-- **ML Inference Backend (`backend/`):** FastAPI service wrapping the exact fitted **`37.32208` Public LB** pipeline (`backend/artifacts/soilvision_v1.joblib`, `267 KB`, verified `0.000000` max EMD diff vs. `submissions/submission.csv` at commit `38100253e14ed13ab61d8acabee43138f30973f7`, and `0.0297` EMD diff end-to-end from raw iPhone 16 JPEGs).
-- **Why the Python ML backend runs separately from Vercel Functions:** The real inference pipeline requires PyTorch, `timm` (`vit_small_patch14_dinov2.lvd142m`), OpenCV, SciPy, and scikit-learn (`> 1.2 GB` uncompressed), which exceeds Vercel Python Serverless Functions' `250 MB` bundle limit. Deploy `backend/` via `backend/Dockerfile` (e.g., Render, Railway, Fly.io, or Cloud Run) and connect `web/` on Vercel via `SOILVISION_BACKEND_URL`.
+SoilVision AI is configured as a **single Vercel project** using **Vercel Services** (root [`vercel.json`](vercel.json)) that deploys both the Next.js frontend and the Python FastAPI ML inference backend together on Vercel — with **no external hosting provider** required:
+
+- **Frontend service (`frontend`, `root: "web/"`):** Next.js App Router (TypeScript strict, Tailwind CSS, Recharts, Lucide icons, React Hook Form + Zod, jsPDF). Handles all public traffic (`/(.*)`), provides scale-preserving client-side optimization for 24 MP camera uploads (keeping multipart payloads safely within Vercel's 4.5 MB default request body limit while preserving exact physical `px/mm` calibration), and proxies API calls via server-side routes (`/api/health`, `/api/model-info`, `/api/predict`).
+- **Private ML backend service (`ml_backend`, `root: "."`, `entrypoint: "backend.app:app"`):** FastAPI service on Vercel Python 3.12 Runtime (`pyproject.toml` with CPU-only PyTorch wheels) wrapping the exact fitted **`37.32208` Public LB** pipeline (`backend/artifacts/soilvision_v1.joblib`, `267 KB`, verified `0.000000` max offline EMD diff vs. `submissions/submission.csv` at commit `38100253e14ed13ab61d8acabee43138f30973f7`). Connected exclusively to `frontend` via Vercel's internal service binding (`SOILVISION_BACKEND_URL`) and kept private from the public internet.
+
+### Verified Runtime & Resource Profile
+
+| Metric | Measured Value | Vercel Limit (Hobby / Pro + Fluid Compute) |
+| --- | --- | --- |
+| Fitted artifact (`soilvision_v1.joblib`) | `267 KB` | Bundled in deployment |
+| Python runtime bundle (CPU PyTorch + OpenCV + SciPy + timm) | `~0.9–1.1 GB` uncompressed | Requires **Large Functions** (`VERCEL_SUPPORT_LARGE_FUNCTIONS=1`, up to `5 GB`) |
+| Cold DINOv2-S + artifact load | `~8.7 s`, RSS `619 MB` | Cached in `/tmp` across warm invocations |
+| 3 × 24 MP iPhone 16 inference (end-to-end) | `~20.7 s`, Peak RSS `1,193 MB` | Fits **Hobby 2 GB** (`855 MB` headroom) & **Pro 4 GB**; `maxDuration: 120s` |
+| Upload request body | Auto-optimized to `< 3.5 MB` in browser | Fits default **4.5 MB** limit (Pro supports up to `20 MiB`) |
 
 ### Local Development
 
@@ -27,6 +38,11 @@ npm install
 npm run dev
 ```
 
+Or run both services together with the Vercel CLI:
+```bash
+npx vercel dev
+```
+
 Re-export the fitted model artifact from authorized local competition data:
 ```bash
 python -m backend.export_model
@@ -38,16 +54,22 @@ python -m backend.export_model
 | --- | --- | --- |
 | `/health` | `GET` | Service health, `model_ready` flag, and active `model_version` |
 | `/model-info` | `GET` | Architecture metadata, camera presets, upload limits, limitations, and disclaimer |
-| `/predict` | `POST` | Multipart upload (`files`: 1–12 JPG/PNG/WebP, `sample_id`, `calibration_mode`, `fov_width_mm` / `effective_ppm` / `camera_preset`, `apply_stone_correction`). Returns versioned `schema_version: "1.0"` JSON. Optional `X-API-Key` header when `SOILVISION_API_KEY` is set. |
+| `/predict` | `POST` | Multipart upload (`files`: 1–12 JPG/PNG/WebP, `sample_id`, `calibration_mode`, `fov_width_mm` / `effective_ppm` / `camera_preset`, `apply_stone_correction`). Returns versioned `schema_version: "1.0"` JSON. Enforces sliding-window per-IP rate limiting (`SOILVISION_RATE_LIMIT_PER_MIN`, default `30`/min) and optional `X-API-Key` auth (`SOILVISION_API_KEY`). |
 
-### Vercel Deployment (`web/`)
+### Vercel Deployment (Single-Project Vercel Services)
 
-1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel.
-2. Set **Root Directory** to `web`, **Framework Preset** to `Next.js`, **Build Command** to `npm run build`.
-3. Deploy `backend/` using `backend/Dockerfile` (set `SOILVISION_CORS_ORIGINS` to your Vercel domain and optional `SOILVISION_API_KEY`).
-4. Set server-only environment variables in Vercel (never `NEXT_PUBLIC_`):
-   - `SOILVISION_BACKEND_URL=https://<your-backend-host>`
-   - `SOILVISION_BACKEND_API_KEY=<matching-api-key>`
+1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel with **Root Directory** set to the repository root (`.`) so Vercel detects the root `vercel.json` and `pyproject.toml`.
+2. In **Project Settings → Functions**, enable **Fluid Compute** (recommended: `4 GB` memory on Pro or `2 GB` on Hobby).
+3. In **Project Settings → Environment Variables**, add:
+   - `VERCEL_SUPPORT_LARGE_FUNCTIONS=1` *(required for CPU PyTorch + OpenCV + timm bundle > 500 MB)*
+   - *(Optional)* `SOILVISION_API_KEY` and `SOILVISION_BACKEND_API_KEY` set to the same random secret if you want shared-secret authentication on top of Vercel's private service binding.
+   - Do **not** set `SOILVISION_BACKEND_URL` manually on Vercel — it is automatically injected by the `ml_backend` service binding in `vercel.json`.
+4. Deploy from `main` (or run `npx vercel --prod` after `npx vercel login`).
+5. Verify the live deployment:
+   ```bash
+   curl -s https://<your-domain>/api/health
+   curl -s https://<your-domain>/api/model-info
+   ```
 
 ---
 

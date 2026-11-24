@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 
-const BACKEND_URL = process.env.SOILVISION_BACKEND_URL || "http://127.0.0.1:8000";
+function getBackendUrl(): string {
+  return process.env.SOILVISION_BACKEND_URL || "http://127.0.0.1:8000";
+}
 
 export async function GET() {
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(`${BACKEND_URL.replace(/\/$/, "")}/model-info`, {
+    const timer = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(new URL("/model-info", getBackendUrl()), {
       cache: "no-store",
       signal: controller.signal,
     });

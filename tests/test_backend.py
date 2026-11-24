@@ -127,3 +127,54 @@ def test_fastapi_endpoints_validation_and_missing_artifact(monkeypatch, tmp_path
         assert body["calibration"]["status"] == "calibrated"
         assert len(body["cumulative_passing_pct"]) == 11
         validate_curves(np.array(body["cumulative_passing_pct"], dtype=float))
+
+
+def test_rate_limiting_enforced(monkeypatch):
+    import backend.app as api
+
+    api._rate_buckets.clear()
+    monkeypatch.setattr(api, "RATE_LIMIT_PER_MIN", 2)
+    monkeypatch.setenv("SOILVISION_EAGER_BACKBONE", "0")
+    with TestClient(api.app) as client:
+        for _ in range(2):
+            r = client.post(
+                "/predict",
+                files={"files": ("bad.txt", b"x", "text/plain")},
+                data={"calibration_mode": "uncalibrated"},
+            )
+            assert r.status_code == 415
+        r_limited = client.post(
+            "/predict",
+            files={"files": ("bad.txt", b"x", "text/plain")},
+            data={"calibration_mode": "uncalibrated"},
+        )
+        assert r_limited.status_code == 429
+    api._rate_buckets.clear()
+
+
+def test_vercel_services_configuration():
+    import json
+
+    repo_root = Path(__file__).resolve().parent.parent
+    cfg = json.loads((repo_root / "vercel.json").read_text(encoding="utf-8"))
+    assert "services" in cfg and "experimentalServices" not in cfg
+    fe = cfg["services"]["frontend"]
+    be = cfg["services"]["ml_backend"]
+    assert fe["root"] == "web/" and fe["framework"] == "nextjs"
+    assert be["root"] == "." and be["framework"] == "fastapi"
+    assert be["entrypoint"] == "backend.app:app"
+    bindings = fe.get("bindings", [])
+    assert any(
+        b.get("type") == "service"
+        and b.get("service") == "ml_backend"
+        and b.get("env") == "SOILVISION_BACKEND_URL"
+        for b in bindings
+    )
+    rewrites = cfg.get("rewrites", [])
+    assert len(rewrites) == 1 and rewrites[0]["destination"]["service"] == "frontend"
+
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'entrypoint = "backend.app:app"' in pyproject_text
+    assert "https://download.pytorch.org/whl/cpu" in pyproject_text
+    assert not (repo_root / "backend" / "Dockerfile").exists()
+    assert not (repo_root / "web" / "vercel.json").exists()

@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 
-const BACKEND_URL = process.env.SOILVISION_BACKEND_URL || "http://127.0.0.1:8000";
-const BACKEND_API_KEY = process.env.SOILVISION_BACKEND_API_KEY || "";
+export const maxDuration = 120;
 
-export const maxDuration = 60;
+function getBackendUrl(): string {
+  return process.env.SOILVISION_BACKEND_URL || "http://127.0.0.1:8000";
+}
 
 export async function POST(request: Request) {
   try {
@@ -17,13 +18,14 @@ export async function POST(request: Request) {
     }
 
     const headers: Record<string, string> = {};
-    if (BACKEND_API_KEY) {
-      headers["X-API-Key"] = BACKEND_API_KEY;
+    const apiKey = process.env.SOILVISION_BACKEND_API_KEY || "";
+    if (apiKey) {
+      headers["X-API-Key"] = apiKey;
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 55000);
-    const res = await fetch(`${BACKEND_URL.replace(/\/$/, "")}/predict`, {
+    const timer = setTimeout(() => controller.abort(), 115000);
+    const res = await fetch(new URL("/predict", getBackendUrl()), {
       method: "POST",
       headers,
       body: formData,

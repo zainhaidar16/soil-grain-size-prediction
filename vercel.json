@@ -1,0 +1,41 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "frontend": {
+      "root": "web/",
+      "framework": "nextjs",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "ml_backend",
+          "format": "url",
+          "env": "SOILVISION_BACKEND_URL"
+        }
+      ],
+      "functions": {
+        "src/app/api/predict/route.ts": {
+          "maxDuration": 120
+        }
+      }
+    },
+    "ml_backend": {
+      "root": ".",
+      "framework": "fastapi",
+      "entrypoint": "backend.app:app",
+      "functions": {
+        "backend/app.py": {
+          "maxDuration": 120,
+          "excludeFiles": "{web/**,notebooks/**,tests/**,submissions/**,configs/**,data/**,.git/**,.venv/**}"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "frontend"
+      }
+    }
+  ]
+}
