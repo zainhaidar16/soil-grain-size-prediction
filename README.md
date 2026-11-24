@@ -1,10 +1,57 @@
-# Soil Grain Size Prediction
+# SoilVision AI — Intelligent Soil Analysis from Images
 
-Competition-focused machine learning project for [Predicting Soil Grain Size Distributions from Images](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview).
+Production-ready computer-vision web application and Kaggle research repository for [Predicting Soil Grain Size Distributions from Images](https://www.kaggle.com/competitions/soil-grain-size-from-photos/overview).
 
-**Goal:** Predict cumulative grain-size mass percentages at 11 diameters from soil sample photographs. The final competition ranking is determined by private-leaderboard log-weighted Earth Mover's Distance (lower is better).
+**Goal:** Predict cumulative grain-size mass percentages at 11 diameters (`0.002–200 mm`) from calibrated soil sample photographs, with interactive logarithmic grading curves, ISO 14688-1 composition estimates, log-interpolated engineering parameters (`D10–D60`, `Cu`, `Cc`), indicative classification, and downloadable CSV/PDF reports.
 
-## Status
+## SoilVision AI Web Application
+
+### Architecture
+
+- **Frontend (`web/`):** Next.js App Router (TypeScript strict, Tailwind CSS, Recharts, Lucide icons, React Hook Form + Zod, jsPDF) designed for **Vercel** deployment. Communicates exclusively with Next.js server-side proxy routes (`/api/health`, `/api/model-info`, `/api/predict`) so backend URLs and API keys are never exposed to the browser.
+- **ML Inference Backend (`backend/`):** FastAPI service wrapping the exact fitted **`37.32208` Public LB** pipeline (`backend/artifacts/soilvision_v1.joblib`, `267 KB`, verified `0.000000` max EMD diff vs. `submissions/submission.csv` at commit `38100253e14ed13ab61d8acabee43138f30973f7`, and `0.0297` EMD diff end-to-end from raw iPhone 16 JPEGs).
+- **Why the Python ML backend runs separately from Vercel Functions:** The real inference pipeline requires PyTorch, `timm` (`vit_small_patch14_dinov2.lvd142m`), OpenCV, SciPy, and scikit-learn (`> 1.2 GB` uncompressed), which exceeds Vercel Python Serverless Functions' `250 MB` bundle limit. Deploy `backend/` via `backend/Dockerfile` (e.g., Render, Railway, Fly.io, or Cloud Run) and connect `web/` on Vercel via `SOILVISION_BACKEND_URL`.
+
+### Local Development
+
+```bash
+# 1. Start the Python FastAPI inference backend (from repo root)
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.app:app --host 127.0.0.1 --port 8000
+
+# 2. Start the Next.js frontend (in a second terminal)
+cd web
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+Re-export the fitted model artifact from authorized local competition data:
+```bash
+python -m backend.export_model
+```
+
+### API Endpoints (`backend/app.py`)
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/health` | `GET` | Service health, `model_ready` flag, and active `model_version` |
+| `/model-info` | `GET` | Architecture metadata, camera presets, upload limits, limitations, and disclaimer |
+| `/predict` | `POST` | Multipart upload (`files`: 1–12 JPG/PNG/WebP, `sample_id`, `calibration_mode`, `fov_width_mm` / `effective_ppm` / `camera_preset`, `apply_stone_correction`). Returns versioned `schema_version: "1.0"` JSON. Optional `X-API-Key` header when `SOILVISION_API_KEY` is set. |
+
+### Vercel Deployment (`web/`)
+
+1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel.
+2. Set **Root Directory** to `web`, **Framework Preset** to `Next.js`, **Build Command** to `npm run build`.
+3. Deploy `backend/` using `backend/Dockerfile` (set `SOILVISION_CORS_ORIGINS` to your Vercel domain and optional `SOILVISION_API_KEY`).
+4. Set server-only environment variables in Vercel (never `NEXT_PUBLIC_`):
+   - `SOILVISION_BACKEND_URL=https://<your-backend-host>`
+   - `SOILVISION_BACKEND_API_KEY=<matching-api-key>`
+
+---
+
+## Kaggle Competition Research Status
 
 - **Previous best-known Kaggle Public LB**: **`68.59422`** (Frozen DINOv2-S RGB + Ridge, Nested LOOCV `45.161`; preserved in git history prior to replacement).
 - **Rejected intermediate candidate**: Physical Texture + GrayNorm DINOv2 PLS Hybrid scored `41.062` LOOCV but **`> 76` Public LB** (overpredicted fines on unseen iPhones due to un-filtered shifted features and linear PLS extrapolation).

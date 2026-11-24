@@ -230,12 +230,24 @@ outputs/
 *.onnx
 *.joblib
 
+# Allow compact versioned SoilVision regression artifact (~267 KB, no raw data or PyTorch weights)
+!backend/artifacts/
+!backend/artifacts/soilvision_v1.joblib
+!backend/artifacts/metadata.json
+
+# Next.js web application build artifacts
+web/node_modules/
+web/.next/
+web/out/
+
 # Credentials, API keys, and secrets (never commit)
 .env
 .env.*
+!web/.env.example
 kaggle.json
 .kaggle/
 *.pem
 *.key
 *token*
 *secret*
+

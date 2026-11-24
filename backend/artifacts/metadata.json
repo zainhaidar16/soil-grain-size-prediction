@@ -1,0 +1,32 @@
+{
+  "model_version": "soilvision-v1.0.0",
+  "exported_at_utc": "2026-11-24T00:40:38.047462+00:00",
+  "recovery_commit": "38100253e14ed13ab61d8acabee43138f30973f7",
+  "architecture": "SoftRoute(Option 1 [0.35 Logit-PCA(tl) + 0.35 Weibull(tl) + 0.30 DINOv2-RGB LKM] -> Scale14 + DINOv2-GN Weibull, s=5) + Large-Stone Correction",
+  "backbone": "vit_small_patch14_dinov2.lvd142m",
+  "training_samples": 24,
+  "training_photos": 127,
+  "sieve_diameters_mm": [
+    0.002,
+    0.0063,
+    0.02,
+    0.063,
+    0.2,
+    0.63,
+    2.0,
+    6.3,
+    20.0,
+    63.0,
+    200.0
+  ],
+  "validation_metrics": {
+    "kaggle_public_emd": 37.32208,
+    "option1_kaggle_public_emd": 43.66208,
+    "location_15_site_oof_emd": 40.1,
+    "cross_phone_emd": 45.85,
+    "option1_location_15_site_oof_emd": 37.83
+  },
+  "train_ppm": 4.5968,
+  "train_leverage_p95": 0.0462,
+  "artifact_size_bytes": 273815
+}

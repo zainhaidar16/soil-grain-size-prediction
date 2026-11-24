@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg: #ffffff;
+  --surface: #f6f8f7;
+  --surface-elevated: #ffffff;
+  --fg: #17212b;
+  --fg-muted: #52606d;
+  --primary: #143c35;
+  --primary-fg: #ffffff;
+  --accent: #148e79;
+  --accent-soft: #e6f4f1;
+  --border: #dce3e0;
+  --warning-bg: #fdf6e7;
+  --warning-border: #e7c87e;
+  --warning-fg: #7a4f01;
+  --danger-bg: #fdf2f2;
+  --danger-border: #f0b8b8;
+  --danger-fg: #9b1c1c;
+}
+
+.dark {
+  --bg: #10181f;
+  --surface: #17212b;
+  --surface-elevated: #1c2834;
+  --fg: #f0f4f3;
+  --fg-muted: #9aa8b4;
+  --primary: #148e79;
+  --primary-fg: #ffffff;
+  --accent: #22b39a;
+  --accent-soft: #132e2a;
+  --border: #283642;
+  --warning-bg: #2a2212;
+  --warning-border: #6b521e;
+  --warning-fg: #f2cf7e;
+  --danger-bg: #2c1719;
+  --danger-border: #6e2d31;
+  --danger-fg: #f6a6a6;
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
