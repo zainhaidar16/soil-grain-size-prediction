@@ -8,8 +8,8 @@ Competition-focused machine learning project for [Predicting Soil Grain Size Dis
 
 - **Previous best-known Kaggle Public LB**: **`68.59422`** (Frozen DINOv2-S RGB + Ridge, Nested LOOCV `45.161`; preserved in git history prior to replacement).
 - **Rejected intermediate candidate**: Physical Texture + GrayNorm DINOv2 PLS Hybrid scored `41.062` LOOCV but **`> 76` Public LB** (overpredicted fines on unseen iPhones due to un-filtered shifted features and linear PLS extrapolation).
-- **Best verified Kaggle Public LB**: **`43.66208`** (Option 1 — Improved Blend + Large-Stone Correction, 15-Site Location CV `37.83`, Cross-Phone `41.81`; preserved at recovery commit `a1b366439fde283b43ad006f33d30abb6e45ba27`).
-- **Active experimental submission (`submissions/submission.csv`, pending Kaggle LB evaluation)**: `SoftRoute(Option 1 → Scale14 + DINO-GN Weibull, s=5)` + unchanged Large-Stone Correction (`15-Site OOF = 40.10`, `Gravel13 = 34.20`, `Cross-Phone = 45.85`; zero `Lab` color features in the sand specialist, zero `2.78%` fines override). Keeps `Muenster` and `Lidl WHV` identical (`0.00` EMD shift) while shifting the 7 sand soils coarser at `0.063–0.63 mm` in line with native `19.52 px/mm` DoG evidence. Not claimed better than `43.66208` until public LB score is obtained.
+- **Previous verified Kaggle Public LB**: **`43.66208`** (Option 1 — Improved Blend + Large-Stone Correction; recovery commit `a1b366439fde283b43ad006f33d30abb6e45ba27`).
+- **Best verified Kaggle Public LB**: **`37.32208`** (active `submissions/submission.csv`: `SoftRoute(Option 1 → Scale14 + DINO-GN Weibull, s=5)` + unchanged Large-Stone Correction; recovery commit **`38100253e14ed13ab61d8acabee43138f30973f7`**; user-reported Kaggle Public LB). Local `15-Site OOF = 40.10` and `Cross-Phone = 45.85` were worse than Option 1's local results despite improved public LB, indicating test-domain shift and public-leaderboard uncertainty. The seven test sands shift coarser at `0.063–0.63 mm`; Muenster and Lidl stay unchanged. No hard `2.78%` fines override.
 
 ### Research findings informing this design
 
@@ -83,6 +83,13 @@ Applying the identical `F(2 mm) >= 90%` sand-routing rule inside 15-site Locatio
 - **Unverifiable test assumptions**: True cobbles (`>= 63 mm`) are nearly absent in train (max `7.4%`), 2D surface area depends strongly on segmentation method (`Muenster` `A20 = 0.215` watershed vs `0.655` SAM), and stereology factor `k` (`±0.2`) swings `Muenster` by `±19.7` EMD and `Lidl WHV` by `±10.5` EMD. Camera calibration error (`effective_ppm × 0.8–1.2`) shifts `Muenster` by only `±3%` (`0.210–0.224`) but `Lidl WHV` by `±12%` (`0.118–0.149`).
 - **Sand/gravel feature-shift audit (`tl` 29d)**: `Lab` color (`tl_b_mean` `1.52 σ`, `tl_L_mean` `2.05 σ` train→test) and fine DoG (`0.25–0.5 mm`, `1.17–1.36 σ`) shift most across cameras. Dropping `Lab` improves Cross-Phone CV (`41.81 → 40.46` with 4-way blend) but worsens 15-site OOF (`37.83 → 39.72`), so Option 1 (`37.83` OOF / `41.81` Cross-Phone) remains the preserved active submission.
 
+### Next research gate (do not change active submission)
+
+- **Hypothesis:** The main remaining disagreement with the reference `19.42515` Public LB notebook lies in sand-range `0.063–0.63 mm` predictions, especially the seven Airbus/Kleinkummerfeld samples; the observed disagreement is **not** ground-truth error because competition test labels are hidden.
+- **Test one constrained sand-expert experiment:** Compare the active Scale14 soft-routed prediction with per-sample, physically calibrated native-resolution DoG grain-size statistics; estimate a continuous, uncertainty-aware adjustment to the sand expert at `0.2` and `0.63 mm`, while fitting all calibration coefficients and model-selection decisions *inside* 15-site held-out training folds. Do not use the reference notebook's test predictions as labels.
+- **Validation:** Report per-soil full-curve EMD, sand-specific contributions near `0.2/0.63 mm`, cross-phone EMD, bootstrap uncertainty by site, and the entire test-vs-current prediction delta. Confirm cumulative `[0,100]` curves and retain the unchanged large-stone correction for Muenster/Lidl.
+- **Decision:** Prefer a new public-LB test only if a physically defensible candidate emerges; document that local CV may not rank models correctly under train/test domain shift. Preserve `submissions/submission.csv` until an experimental submission is explicitly approved. Never claim to achieve `0.00000` without hidden-label evidence.
+
 ## Repository layout
 
 ```text
@@ -142,7 +149,7 @@ python -m src.model --mode logq_ensemble --write-submission --output submissions
 
 ## Submitting to Kaggle
 
-Only **one** submission file is maintained in the repository: `submissions/submission.csv` (currently preserving our best-known `68.59422` public LB submission until replacement is approved). Git history tracks prior versions.
+Only **one** submission file is maintained in the repository: `submissions/submission.csv` (currently the best verified **`37.32208` Public LB** version, recovery commit `38100253e14ed13ab61d8acabee43138f30973f7`). Restore this file from that exact commit if an experimental submission performs worse. Git history preserves the earlier `43.66208` version at `a1b366439fde283b43ad006f33d30abb6e45ba27`. Do not overwrite the active CSV without explicit approval.
 
 ## Notebook workflow
 
@@ -160,7 +167,7 @@ Only **one** submission file is maintained in the repository: `submissions/submi
 - **Known limitations:**
   - Very small labeled dataset (`n = 24` soil samples), so high variance is expected on unseen geological sites.
   - Camera domain shift remains between training phones (Android) and test phones (iPhones) in lighting, sharpness, and color rendition despite physical-scale cropping.
-  - Only frozen DINOv2-S embeddings + linear Ridge regression are used so far; fine-grained particle-size texture features, multi-backbone ensembles, and EMD-optimal monotonic projection are left for future milestones.
+  - The production submission now combines train-like calibrated texture and DINOv2-based methods, a Scale14 sand specialist, soft routing, and a large-stone correction. Training soils are disproportionately silty relative to the observed test-sand texture; the 37.32208 public-LB gain despite worse grouped CV highlights distribution shift, not confirmed private-set generalization.
 
 ## Research and integrity
 
