@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
-import pandas as pd
 from PIL import Image, ImageOps
+
+if TYPE_CHECKING:  # pandas is only used for research manifest type hints
+    import pandas as pd
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)

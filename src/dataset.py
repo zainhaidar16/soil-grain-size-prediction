@@ -4,10 +4,12 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, Iterable
 
-import pandas as pd
 from PIL import Image, ImageOps
+
+if TYPE_CHECKING:  # pandas is only required for research manifests, not production inference
+    import pandas as pd
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
@@ -149,6 +151,8 @@ def _find_split_images(data_dir: Path, split: str) -> list[Path]:
 
 def build_image_manifest(data_dir: Path, split: str) -> pd.DataFrame:
     """Build a verified image-to-sample manifest with camera and physical scale metadata."""
+    import pandas as pd
+
     data_dir = Path(data_dir)
     ppm_files = sorted(data_dir.rglob("ppm_updated.csv"))
     if not ppm_files:

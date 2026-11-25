@@ -25,7 +25,7 @@
       "functions": {
         "backend/app.py": {
           "maxDuration": 120,
-          "excludeFiles": "{web/**,notebooks/**,tests/**,submissions/**,configs/**,data/**,.git/**,.venv/**}"
+          "excludeFiles": "{web/**,notebooks/**,tests/**,submissions/**,configs/**,data/**,requirements.txt,.git/**,.venv/**}"
         }
       }
     }

@@ -11,17 +11,17 @@ Production-ready computer-vision web application and Kaggle research repository 
 SoilVision AI is configured as a **single Vercel project** using **Vercel Services** (root [`vercel.json`](vercel.json)) that deploys both the Next.js frontend and the Python FastAPI ML inference backend together on Vercel — with **no external hosting provider** required:
 
 - **Frontend service (`frontend`, `root: "web/"`):** Next.js App Router (TypeScript strict, Tailwind CSS, Recharts, Lucide icons, React Hook Form + Zod, jsPDF). Handles all public traffic (`/(.*)`), provides scale-preserving client-side optimization for 24 MP camera uploads (keeping multipart payloads safely within Vercel's 4.5 MB default request body limit while preserving exact physical `px/mm` calibration), and proxies API calls via server-side routes (`/api/health`, `/api/model-info`, `/api/predict`).
-- **Private ML backend service (`ml_backend`, `root: "."`, `entrypoint: "backend.app:app"`):** FastAPI service on Vercel Python 3.12 Runtime (`pyproject.toml` with CPU-only PyTorch wheels) wrapping the exact fitted **`37.32208` Public LB** pipeline (`backend/artifacts/soilvision_v1.joblib`, `267 KB`, verified `0.000000` max offline EMD diff vs. `submissions/submission.csv` at commit `38100253e14ed13ab61d8acabee43138f30973f7`). Connected exclusively to `frontend` via Vercel's internal service binding (`SOILVISION_BACKEND_URL`) and kept private from the public internet.
+- **Private ML backend service (`ml_backend`, `root: "."`, `entrypoint: "backend.app:app"`):** FastAPI service on Vercel Python 3.12 Runtime (`pyproject.toml` + `uv.lock`) wrapping the exact fitted **`37.32208` Public LB** pipeline (`backend/artifacts/soilvision_v1.joblib`, `267 KB`) with a **pure-NumPy + `safetensors` DINOv2-S (`vit_small_patch14_dinov2.lvd142m`)** encoder (`3.28e-7` max embedding diff and `1.00000000` cosine similarity vs. PyTorch `timm`, `0.0297` EMD diff end-to-end from raw 24 MP iPhone 16 JPEGs). Eliminating PyTorch/CUDA/timm/pandas cuts the uncompressed Python bundle from **`5,705 MB` → `367 MB`**, fitting cleanly inside Vercel's standard **500 MB** Python limit with no Large Functions beta required. Connected exclusively to `frontend` via Vercel's internal service binding (`SOILVISION_BACKEND_URL`) and kept private from the public internet.
 
 ### Verified Runtime & Resource Profile
 
-| Metric | Measured Value | Vercel Limit (Hobby / Pro + Fluid Compute) |
+| Metric | Measured Value | Vercel Limit (Standard Hobby / Pro) |
 | --- | --- | --- |
 | Fitted artifact (`soilvision_v1.joblib`) | `267 KB` | Bundled in deployment |
-| Python runtime bundle (CPU PyTorch + OpenCV + SciPy + timm) | `~0.9–1.1 GB` uncompressed | Requires **Large Functions** (`VERCEL_SUPPORT_LARGE_FUNCTIONS=1`, up to `5 GB`) |
-| Cold DINOv2-S + artifact load | `~8.7 s`, RSS `619 MB` | Cached in `/tmp` across warm invocations |
-| 3 × 24 MP iPhone 16 inference (end-to-end) | `~20.7 s`, Peak RSS `1,193 MB` | Fits **Hobby 2 GB** (`855 MB` headroom) & **Pro 4 GB**; `maxDuration: 120s` |
-| Upload request body | Auto-optimized to `< 3.5 MB` in browser | Fits default **4.5 MB** limit (Pro supports up to `20 MiB`) |
+| Python runtime bundle (`fastapi`, `numpy`, `scipy`, `scikit-learn`, `opencv-python-headless==4.10.0.84`, `Pillow`, `safetensors`, `joblib`) | **`367 MB`** uncompressed | Fits standard **`500 MB`** Python limit (`133 MB` headroom) |
+| DINOv2-S weights (`model.safetensors`, downloaded on cold start) | `88 MB` | Cached in `/tmp/soilvision_hf_cache` across warm invocations |
+| Cold load & 3 × 24 MP iPhone 16 inference | Verified in zero-PyTorch venv (`0.0297` EMD diff vs. `37.32208`) | Fits **Hobby 2 GB** & **Pro 4 GB**; `maxDuration: 120s` |
+| Upload request body | Auto-optimized to `< 3.5 MB` in browser when `> 3.5 MB` | Fits default **4.5 MB** limit (Pro supports up to `20 MiB`) |
 
 ### Local Development
 
@@ -58,12 +58,9 @@ python -m backend.export_model
 
 ### Vercel Deployment (Single-Project Vercel Services)
 
-1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel as project name **`soilvision-ai`**, with **Root Directory** set to the repository root (`.`) so Vercel detects the root `vercel.json` and `pyproject.toml`.
-2. In **Project Settings → Functions**, enable **Fluid Compute** (recommended: `4 GB` memory on Pro or `2 GB` on Hobby).
-3. In **Project Settings → Environment Variables**, add:
-   - `VERCEL_SUPPORT_LARGE_FUNCTIONS=1` *(required for CPU PyTorch + OpenCV + timm bundle > 500 MB)*
-   - *(Optional)* `SOILVISION_API_KEY` and `SOILVISION_BACKEND_API_KEY` set to the same random secret if you want shared-secret authentication on top of Vercel's private service binding.
-   - Do **not** set `SOILVISION_BACKEND_URL` manually on Vercel — it is automatically injected by the `ml_backend` service binding in `vercel.json`.
+1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel as project name **`soilvision-ai`**, with **Root Directory** set to the repository root (`.`) so Vercel detects the root `vercel.json`, `pyproject.toml`, and `uv.lock`.
+2. In **Project Settings → Functions**, keep **Fluid Compute** enabled (default for new projects; works on both Hobby `2 GB` and Pro `4 GB` with the standard `500 MB` Python bundle limit).
+3. *(Optional)* In **Project Settings → Environment Variables**, set matching `SOILVISION_API_KEY` and `SOILVISION_BACKEND_API_KEY` secrets if you want shared-secret authentication on top of Vercel's private service binding. Do **not** set `SOILVISION_BACKEND_URL` manually on Vercel — it is automatically injected by the `ml_backend` service binding in `vercel.json`.
 4. Deploy from `main` (or run `npx vercel --prod --name soilvision-ai` after `npx vercel login`).
 5. Verify the live deployment:
    ```bash

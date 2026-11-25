@@ -192,6 +192,11 @@ def test_vercel_services_configuration():
 
     pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     assert 'entrypoint = "backend.app:app"' in pyproject_text
-    assert "https://download.pytorch.org/whl/cpu" in pyproject_text
+    assert "safetensors" in pyproject_text
+    deps_section = pyproject_text.split("[project.optional-dependencies]")[0]
+    assert '"torch' not in deps_section
+    assert '"timm' not in deps_section
+    assert (repo_root / "web" / "src" / "lib" / "types.ts").is_file()
+    assert (repo_root / "web" / "src" / "lib" / "utils.ts").is_file()
     assert not (repo_root / "backend" / "Dockerfile").exists()
     assert not (repo_root / "web" / "vercel.json").exists()

@@ -6,28 +6,32 @@ import io
 import json
 import os
 import tempfile
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
-# On Vercel Serverless / Fluid Functions, only /tmp is writable for HuggingFace/timm weight caching.
+# On Vercel Serverless / Fluid Functions, only /tmp is writable for weight caching.
 if os.environ.get("VERCEL"):
     os.environ.setdefault("HF_HOME", "/tmp/soilvision_hf_cache")
-    os.environ.setdefault("TORCH_HOME", "/tmp/soilvision_torch_cache")
     os.environ.setdefault("XDG_CACHE_HOME", "/tmp/soilvision_cache")
 
 import joblib
 import numpy as np
 from PIL import Image, ImageOps
+from safetensors.numpy import load_file as load_safetensors
+from scipy.special import erf
 
 from src.dataset import compute_effective_ppm
 from src.features import (
-    DINOv2FeatureExtractor,
-    crop_physical_square,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
     estimate_coarse_stone_area,
     extract_dog_band5_features,
     extract_dog_lab_granulometry_features,
+    l2_normalize,
     load_train_like_image,
+    preprocess_soil_image,
 )
 from src.metric import (
     DEFAULT_QUANTILE_PROBS,
@@ -39,7 +43,6 @@ from src.metric import (
     validate_curves,
     weibull_lnb_c_to_curve,
 )
-from src.model import weighted_median_matrix
 
 ARTIFACT_DIR = Path(__file__).resolve().parent / "artifacts"
 DEFAULT_ARTIFACT_PATH = ARTIFACT_DIR / "soilvision_v1.joblib"
@@ -278,6 +281,167 @@ def resolve_calibration_ppm(
     raise ValueError(f"Unsupported calibration_mode '{calibration_mode}'")
 
 
+def _weighted_median_matrix(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Compute column-wise weighted median (L1-optimal point estimate in quantile space)."""
+    w = np.asarray(weights, dtype=float)
+    w = w / (w.sum() + 1e-12)
+    out = np.zeros(values.shape[1], dtype=float)
+    for col in range(values.shape[1]):
+        order = np.argsort(values[:, col])
+        cw = np.cumsum(w[order])
+        idx = int(np.searchsorted(cw, 0.5))
+        out[col] = values[order[min(idx, len(order) - 1)], col]
+    return out
+
+
+class NumPyDINOv2Extractor:
+    """Pure-NumPy + safetensors ViT-Small/14 DINOv2 encoder matching PyTorch timm to ~3e-7."""
+
+    HF_WEIGHTS_URL_TEMPLATE = "https://huggingface.co/timm/{model_name}/resolve/main/model.safetensors"
+
+    def __init__(
+        self,
+        model_name: str = "vit_small_patch14_dinov2.lvd142m",
+        image_size: int = 224,
+        crop_mms: Sequence[float | None] = (90.0, 150.0),
+    ) -> None:
+        self.model_name = model_name
+        self.image_size = int(image_size)
+        self.crop_mms = tuple(crop_mms)
+        self._grid_n = self.image_size // 14
+        self._mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 1, 3)
+        self._std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 1, 3)
+
+        weights_path = self._resolve_weights_path()
+        raw = load_safetensors(str(weights_path))
+        self.cls_token = raw["cls_token"].astype(np.float32)
+        self.pos_embed = self._resample_pos_embed(raw["pos_embed"].astype(np.float32), self._grid_n, self._grid_n)
+        self.patch_w = raw["patch_embed.proj.weight"].astype(np.float32).reshape(384, -1).T
+        self.patch_b = raw["patch_embed.proj.bias"].astype(np.float32)
+        self.norm_w = raw["norm.weight"].astype(np.float32)
+        self.norm_b = raw["norm.bias"].astype(np.float32)
+
+        self.blocks: list[dict[str, np.ndarray]] = []
+        for i in range(12):
+            p = f"blocks.{i}."
+            self.blocks.append(
+                {
+                    "n1_w": raw[p + "norm1.weight"].astype(np.float32),
+                    "n1_b": raw[p + "norm1.bias"].astype(np.float32),
+                    "qkv_w": raw[p + "attn.qkv.weight"].astype(np.float32).T,
+                    "qkv_b": raw[p + "attn.qkv.bias"].astype(np.float32),
+                    "proj_w": raw[p + "attn.proj.weight"].astype(np.float32).T,
+                    "proj_b": raw[p + "attn.proj.bias"].astype(np.float32),
+                    "ls1": raw[p + "ls1.gamma"].astype(np.float32),
+                    "n2_w": raw[p + "norm2.weight"].astype(np.float32),
+                    "n2_b": raw[p + "norm2.bias"].astype(np.float32),
+                    "fc1_w": raw[p + "mlp.fc1.weight"].astype(np.float32).T,
+                    "fc1_b": raw[p + "mlp.fc1.bias"].astype(np.float32),
+                    "fc2_w": raw[p + "mlp.fc2.weight"].astype(np.float32).T,
+                    "fc2_b": raw[p + "mlp.fc2.bias"].astype(np.float32),
+                    "ls2": raw[p + "ls2.gamma"].astype(np.float32),
+                }
+            )
+        del raw
+
+    def _resolve_weights_path(self) -> Path:
+        env_path = os.environ.get("SOILVISION_DINOV2_WEIGHTS")
+        if env_path and Path(env_path).is_file():
+            return Path(env_path)
+
+        # Reuse existing HuggingFace Hub cache when available (e.g., local dev / CI)
+        hf_roots = [
+            Path(os.environ.get("HF_HOME", "")) / "hub" if os.environ.get("HF_HOME") else None,
+            Path.home() / ".cache" / "huggingface" / "hub",
+        ]
+        repo_dir_name = f"models--timm--{self.model_name}"
+        for root in hf_roots:
+            if root and root.is_dir():
+                for candidate in sorted((root / repo_dir_name / "snapshots").glob("*/model.safetensors")):
+                    if candidate.is_file():
+                        return candidate
+
+        cache_dir = Path("/tmp/soilvision_hf_cache") if os.environ.get("VERCEL") else Path.home() / ".cache" / "soilvision"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target = cache_dir / f"{self.model_name}.safetensors"
+        if target.is_file() and target.stat().st_size > 1_000_000:
+            return target
+
+        url = self.HF_WEIGHTS_URL_TEMPLATE.format(model_name=self.model_name)
+        tmp_target = target.with_suffix(".safetensors.tmp")
+        req = urllib.request.Request(url, headers={"User-Agent": "SoilVisionAI/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp_target, "wb") as out_f:
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                out_f.write(chunk)
+        os.replace(tmp_target, target)
+        return target
+
+    @staticmethod
+    def _resample_pos_embed(pos_embed: np.ndarray, new_h: int, new_w: int) -> np.ndarray:
+        cls_pos = pos_embed[:, :1, :]
+        grid_pos = pos_embed[:, 1:, :]
+        old_n = int(round(grid_pos.shape[1] ** 0.5))
+        if old_n == new_h and old_n == new_w:
+            return pos_embed
+        grid = grid_pos.reshape(old_n, old_n, -1)
+        c_dim = grid.shape[-1]
+        out = np.empty((new_h, new_w, c_dim), dtype=np.float32)
+        for c in range(c_dim):
+            im = Image.fromarray(grid[:, :, c], mode="F")
+            out[:, :, c] = np.asarray(im.resize((new_w, new_h), resample=Image.Resampling.BICUBIC), dtype=np.float32)
+        return np.concatenate([cls_pos, out.reshape(1, new_h * new_w, c_dim)], axis=1)
+
+    @staticmethod
+    def _layer_norm(x: np.ndarray, w: np.ndarray, b: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+        mu = x.mean(axis=-1, keepdims=True)
+        var = np.mean((x - mu) ** 2, axis=-1, keepdims=True)
+        return (x - mu) / np.sqrt(var + eps) * w + b
+
+    def encode_batch(self, pil_images: Sequence[Image.Image]) -> np.ndarray:
+        arr = np.stack([np.asarray(im, dtype=np.float32) / 255.0 for im in pil_images], axis=0)
+        arr = (arr - self._mean) / self._std
+        bsz = arr.shape[0]
+        gn = self._grid_n
+        n_patches = gn * gn
+        patches = (
+            arr.transpose(0, 3, 1, 2)
+            .reshape(bsz, 3, gn, 14, gn, 14)
+            .transpose(0, 2, 4, 1, 3, 5)
+            .reshape(bsz, n_patches, -1)
+        )
+        x = patches @ self.patch_w + self.patch_b
+        cls = np.broadcast_to(self.cls_token, (bsz, 1, 384))
+        x = np.concatenate([cls, x], axis=1) + self.pos_embed
+
+        scale = np.float32(64.0 ** -0.5)
+        inv_sqrt2 = np.float32(0.7071067811865476)
+        n_tok = n_patches + 1
+        for blk in self.blocks:
+            h = self._layer_norm(x, blk["n1_w"], blk["n1_b"])
+            qkv = (h @ blk["qkv_w"] + blk["qkv_b"]).reshape(bsz, n_tok, 3, 6, 64).transpose(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            attn = np.matmul(q, k.transpose(0, 1, 3, 2)) * scale
+            attn = attn - attn.max(axis=-1, keepdims=True)
+            attn = np.exp(attn)
+            attn = attn / attn.sum(axis=-1, keepdims=True)
+            out = np.matmul(attn, v).transpose(0, 2, 1, 3).reshape(bsz, n_tok, 384)
+            out = out @ blk["proj_w"] + blk["proj_b"]
+            x = x + out * blk["ls1"]
+
+            h2 = self._layer_norm(x, blk["n2_w"], blk["n2_b"])
+            fc1 = h2 @ blk["fc1_w"] + blk["fc1_b"]
+            fc1 = (0.5 * fc1 * (1.0 + erf(fc1 * inv_sqrt2))).astype(np.float32)
+            fc2 = fc1 @ blk["fc2_w"] + blk["fc2_b"]
+            x = x + fc2 * blk["ls2"]
+
+        x = self._layer_norm(x, self.norm_w, self.norm_b)
+        feats = np.concatenate([x[:, 0, :], x[:, 1:, :].mean(axis=1)], axis=-1)
+        return l2_normalize(feats)
+
+
 class SoilVisionEngine:
     """Thread-safe production inference wrapper around the fitted 37.32208 artifact."""
 
@@ -300,24 +464,17 @@ class SoilVisionEngine:
             if self.metadata_path.exists()
             else {"model_version": self.bundle["model_version"]}
         )
-        self._ext_rgb: DINOv2FeatureExtractor | None = None
-        self._ext_gn: DINOv2FeatureExtractor | None = None
+        self._ext_rgb: NumPyDINOv2Extractor | None = None
         if load_backbone:
             self._ensure_backbones()
 
     def _ensure_backbones(self) -> None:
         if self._ext_rgb is None:
-            import torch
-
-            torch.set_num_threads(min(2, os.cpu_count() or 1))
-            self._ext_rgb = DINOv2FeatureExtractor(
+            self._ext_rgb = NumPyDINOv2Extractor(
                 model_name=str(self.bundle["dinov2_model_name"]),
-                gray_norm=False,
             )
 
     def _extract_dinov2_pair(self, image_path: Path, effective_ppm: float) -> tuple[np.ndarray, np.ndarray]:
-        from src.features import l2_normalize, preprocess_soil_image
-
         self._ensure_backbones()
         assert self._ext_rgb is not None
         ext = self._ext_rgb
@@ -335,7 +492,7 @@ class SoilVisionEngine:
             g = np.clip((g - g.mean()) / (g.std() + 1e-6) * 45.0 + 128.0, 0.0, 255.0).astype(np.uint8)
             gn_views.append(Image.fromarray(np.stack([g, g, g], axis=-1), mode="RGB"))
 
-        emb = ext._encode_batch(rgb_views + gn_views)  # noqa: SLF001
+        emb = ext.encode_batch(rgb_views + gn_views)
         n_s = len(ext.crop_mms)
         rgb_concat = np.concatenate([emb[i] for i in range(n_s)], axis=0)[None, :]
         gn_concat = np.concatenate([emb[n_s + i] for i in range(n_s)], axis=0)[None, :]
@@ -369,7 +526,7 @@ class SoilVisionEngine:
         u_ev = b["pls_lkm"].transform(z_ev_lkm) / b["u_sd"]
         d2 = np.sum((b["u_tr_norm"] - u_ev) ** 2, axis=-1)
         weights = np.exp(-0.5 * d2 / (float(b["lkm_bandwidth"]) ** 2))
-        q_pred = weighted_median_matrix(b["y_tr_q"], weights)
+        q_pred = _weighted_median_matrix(b["y_tr_q"], weights)
         p_dino = repair_isotonic(log_quantiles_to_curve(q_pred, DEFAULT_QUANTILE_PROBS))
 
         w1, w2, w3 = b["opt1_weights"]
