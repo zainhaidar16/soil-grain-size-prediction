@@ -58,13 +58,13 @@ python -m backend.export_model
 
 ### Vercel Deployment (Single-Project Vercel Services)
 
-1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel with **Root Directory** set to the repository root (`.`) so Vercel detects the root `vercel.json` and `pyproject.toml`.
+1. Import `zainhaidar16/soil-grain-size-prediction` into Vercel as project name **`soilvision-ai`**, with **Root Directory** set to the repository root (`.`) so Vercel detects the root `vercel.json` and `pyproject.toml`.
 2. In **Project Settings → Functions**, enable **Fluid Compute** (recommended: `4 GB` memory on Pro or `2 GB` on Hobby).
 3. In **Project Settings → Environment Variables**, add:
    - `VERCEL_SUPPORT_LARGE_FUNCTIONS=1` *(required for CPU PyTorch + OpenCV + timm bundle > 500 MB)*
    - *(Optional)* `SOILVISION_API_KEY` and `SOILVISION_BACKEND_API_KEY` set to the same random secret if you want shared-secret authentication on top of Vercel's private service binding.
    - Do **not** set `SOILVISION_BACKEND_URL` manually on Vercel — it is automatically injected by the `ml_backend` service binding in `vercel.json`.
-4. Deploy from `main` (or run `npx vercel --prod` after `npx vercel login`).
+4. Deploy from `main` (or run `npx vercel --prod --name soilvision-ai` after `npx vercel login`).
 5. Verify the live deployment:
    ```bash
    curl -s https://<your-domain>/api/health

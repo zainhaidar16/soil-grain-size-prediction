@@ -112,8 +112,25 @@ def test_fastapi_endpoints_validation_and_missing_artifact(monkeypatch, tmp_path
         )
         assert r_corrupt.status_code == 400
 
-        # Real inference on a valid calibrated JPEG
+        # Undersized image (<224 px) rejected with 422
+        tiny_jpg = _make_jpeg_bytes(100, 100)
+        r_tiny = client.post(
+            "/predict",
+            files={"files": ("tiny.jpg", tiny_jpg, "image/jpeg")},
+            data={"calibration_mode": "uncalibrated"},
+        )
+        assert r_tiny.status_code == 422
+
+        # Invalid calibration parameters rejected with 422
         jpg_bytes = _make_jpeg_bytes(320, 320)
+        r_bad_cal = client.post(
+            "/predict",
+            files={"files": ("sample_01.jpg", jpg_bytes, "image/jpeg")},
+            data={"calibration_mode": "fov_mm", "fov_width_mm": "5"},
+        )
+        assert r_bad_cal.status_code == 422
+
+        # Real inference on a valid calibrated JPEG
         r_ok = client.post(
             "/predict",
             files={"files": ("sample_01.jpg", jpg_bytes, "image/jpeg")},
